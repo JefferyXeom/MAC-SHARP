@@ -1,0 +1,4 @@
+/home/d1/workspace/Clique_project/MAC-SHARP/build/CMakeFiles/MAC_SHARP.dir
+/home/d1/workspace/Clique_project/MAC-SHARP/build/CMakeFiles/test.dir
+/home/d1/workspace/Clique_project/MAC-SHARP/build/CMakeFiles/edit_cache.dir
+/home/d1/workspace/Clique_project/MAC-SHARP/build/CMakeFiles/rebuild_cache.dir

@@ -1,0 +1,14 @@
+[
+{
+  "directory": "/home/d1/workspace/Clique_project/MAC-SHARP/build",
+  "command": "/usr/bin/g++ -DDISABLE_LIBUSB_1_0 -DDISABLE_PCAP -DDISABLE_PNG -DIGRAPH_STATIC -Dqh_QHpointer -DvtkRenderingContext2D_AUTOINIT=\"1(vtkRenderingContextOpenGL2)\" -DvtkRenderingCore_AUTOINIT=\"3(vtkInteractionStyle,vtkRenderingFreeType,vtkRenderingOpenGL2)\" -I/home/d1/workspace/Clique_project/MAC-SHARP/include -isystem /usr/include/vtk-7.1 -isystem /usr/include/freetype2 -isystem /usr/include/pcl-1.10 -isystem /usr/include/eigen3 -isystem /usr/include/ni -isystem /usr/include/openni2 -isystem /usr/local/include/igraph   -fopenmp -g -std=gnu++17   -Wall -Wextra -Wpedantic -g -O0 -o CMakeFiles/MAC_SHARP.dir/src/MAC_SHARP.cpp.o -c /home/d1/workspace/Clique_project/MAC-SHARP/src/MAC_SHARP.cpp",
+  "file": "/home/d1/workspace/Clique_project/MAC-SHARP/src/MAC_SHARP.cpp",
+  "output": "CMakeFiles/MAC_SHARP.dir/src/MAC_SHARP.cpp.o"
+},
+{
+  "directory": "/home/d1/workspace/Clique_project/MAC-SHARP/build",
+  "command": "/usr/bin/g++ -DDISABLE_LIBUSB_1_0 -DDISABLE_PCAP -DDISABLE_PNG -DIGRAPH_STATIC -Dqh_QHpointer -DvtkRenderingContext2D_AUTOINIT=\"1(vtkRenderingContextOpenGL2)\" -DvtkRenderingCore_AUTOINIT=\"3(vtkInteractionStyle,vtkRenderingFreeType,vtkRenderingOpenGL2)\" -I/home/d1/workspace/Clique_project/MAC-SHARP/include -isystem /usr/include/vtk-7.1 -isystem /usr/include/freetype2 -isystem /usr/include/pcl-1.10 -isystem /usr/include/eigen3 -isystem /usr/include/ni -isystem /usr/include/openni2 -isystem /usr/local/include/igraph   -fopenmp -g -std=gnu++17   -Wall -Wextra -Wpedantic -g -O0 -o CMakeFiles/test.dir/test/test.cpp.o -c /home/d1/workspace/Clique_project/MAC-SHARP/test/test.cpp",
+  "file": "/home/d1/workspace/Clique_project/MAC-SHARP/test/test.cpp",
+  "output": "CMakeFiles/test.dir/test/test.cpp.o"
+}
+]
