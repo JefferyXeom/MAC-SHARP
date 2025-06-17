@@ -6,7 +6,7 @@
 
 string folder_path; // dataset folder path
 bool add_overlap;  // 
-bool low_inlier_ratio; // 
+bool low_inlier_ratio; //
 bool no_logs; 
 
 string program_name = "";

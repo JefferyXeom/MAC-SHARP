@@ -38,3 +38,8 @@
 .vs/*
 out/*
 
+# Visual Studio Code files
+.vscoded/*
+
+# build directories
+build/*
