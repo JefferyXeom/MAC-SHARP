@@ -77,6 +77,8 @@
         "svd": "cpp",
         "stdvector": "cpp",
         "ios": "cpp",
-        "any": "cpp"
+        "any": "cpp",
+        "codecvt": "cpp",
+        "unordered_set": "cpp"
     }
 }
