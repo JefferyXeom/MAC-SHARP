@@ -1,0 +1,1 @@
+Time in one iteration: 0.000000 seconds, memory used in one iteration: 

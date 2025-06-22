@@ -47,11 +47,11 @@ typedef pcl::PointCloud<pcl::PointXYZ>::Ptr PointCloudPtr;
 
 typedef struct {
     int src_index;
-    int des_index;
+    int tgt_index;
     pcl::PointXYZ src;
-    pcl::PointXYZ des;
+    pcl::PointXYZ tgt;
     Eigen::Vector3f src_norm;
-    Eigen::Vector3f des_norm;
+    Eigen::Vector3f tgt_norm;
     float score;
     int inlier_weight;
 }Corre_3DMatch;

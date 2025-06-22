@@ -7,6 +7,44 @@ Source code of the paper: (Still in development)
 
 
 
+## Requirements
+
+### Hardware
+Tested on modern INTEL CPU (with AVX instruction sets) 
+
+### System
+Tested on Windows 11 and Ubuntu 24.04
+
+### C++ Compiler
+Tested with GCC which support C++17 or later
+
+### C++ libraries
+PCL (Point Cloud Library) 1.12.0 or later, with AVX compilation flag enabled
+OpenBLAS
+
+
+## Installation
+
+### 1. Install the required libraries first
+
+#### 1.1 pcl
+
+Go to the [PCL installation guide](https://pointclouds.org/downloads/) and follow the instructions for your platform.
+
+
+
+``` bash
+git clone https://github.com/JefferyXeom/MAC_SHARP.git
+cd MAC_SHARP
+
+
+
+
+```
+
+
+
+
 
 
 ## Reference
