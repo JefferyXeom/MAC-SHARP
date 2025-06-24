@@ -2,8 +2,7 @@
 
 Source code of the paper: (Still in development)
 
-
-
+We firstly consider the parallel architecture for better performace 
 
 
 

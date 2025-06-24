@@ -56,4 +56,45 @@ typedef struct {
     int inlier_weight;
 }Corre_3DMatch;
 
+typedef struct
+{
+    int current_index;
+    int degree;
+    float score;
+    vector<int> correspondences_index;
+    int true_num;
+}Vote_exp; // for degree calculation
+
+typedef struct Vote
+{
+    int current_index;
+    float score;
+    bool flag;
+
+    // --- 添加构造函数 ---
+    // 提供一个默认构造函数，以防需要创建空对象
+    Vote() : current_index(0), score(0.0f), flag(false) {}
+
+    // 这正是 emplace_back 需要的构造函数！
+    Vote(const int idx, const float scr, const bool flg)
+        : current_index(idx), score(scr), flag(flg) {}
+}Vote; // for cluster factor, for evaluation_est
+
+
+
+typedef struct local{
+    int current_ind; // clique index
+    vector<Vote>clique_ind_score;
+    float score;
+
+    // default constructor
+    local() : current_ind(0), score(0.0f) {
+        clique_ind_score.clear();
+    }
+    // constructor
+    local(int ind = 0, float scr = 0.0f) : current_ind(ind), score(scr) {
+        clique_ind_score.clear();
+    }
+}local; // for
+
 #endif
