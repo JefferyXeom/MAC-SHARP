@@ -77,7 +77,7 @@ include_directories(${OPENBLAS_INCLUDE_DIRS})
 # Define source files
 set(SOURCES
     src/MAC_SHARP.cpp
-#    src/other_file1.cpp
+    src/MAC_utils.cpp
 #    src/other_file2.cpp
 )
 # Define header files
@@ -96,6 +96,12 @@ set(graph_construction_test_SOURCES
 include_directories(${PROJECT_SOURCE_DIR}/include)
 # Main functional executable
 add_executable(MAC_SHARP ${SOURCES})
+if(MSVC)
+    target_compile_options(MAC_SHARP PRIVATE /arch:SSE4.1)
+else()
+    target_compile_options(MAC_SHARP PRIVATE -msse4.1)
+endif()
+#add_compile_options(/arch:AVX)
 # Test executable
 add_executable(test ${TEST_SOURCES})
 target_link_libraries(MAC_SHARP PRIVATE ${PCL_LIBRARIES} igraph::igraph OpenBLAS::OpenBLAS)

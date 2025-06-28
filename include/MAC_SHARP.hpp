@@ -5,10 +5,10 @@
 
 
 #define constE 2.718282
-#define NULL_POINTID -1
-#define NULL_Saliency -1000
+#define NULL_POINTID (-1)
+#define NULL_Saliency (-1000)
 #define Random(x) (rand()%x)
-#define Corres_view_gap -200
+#define Corres_view_gap (-200)
 #define Align_precision_threshold 0.1
 #define tR 116//30
 #define tG 205//144
@@ -40,21 +40,14 @@ extern bool no_logs;
 // #include <unistd.h>
 #include <pcl/segmentation/impl/conditional_euclidean_clustering.hpp>
 //
-typedef pcl::PointCloud<pcl::PointXYZ>::Ptr PointCloudPtr;
 
 
-
-
-typedef struct {
-    int src_index;
-    int tgt_index;
-    pcl::PointXYZ src;
-    pcl::PointXYZ tgt;
-    Eigen::Vector3f src_norm;
-    Eigen::Vector3f tgt_norm;
-    float score;
-    int inlier_weight;
-}Corre_3DMatch;
+// Terminal color codes for output
+#define RED "\033[31m"
+#define GREEN "\033[32m"
+#define YELLOW "\033[33m"
+#define BLUE "\033[34m"
+#define RESET "\033[0m"
 
 typedef struct
 {
@@ -82,19 +75,19 @@ typedef struct Vote
 
 
 
-typedef struct local{
-    int current_ind; // clique index
+typedef struct local_clique{
+    int current_ind = 0; // clique index
     vector<Vote>clique_ind_score;
-    float score;
+    float score = 0.0f;
 
     // default constructor
-    local() : current_ind(0), score(0.0f) {
+    local_clique() {
         clique_ind_score.clear();
     }
     // constructor
-    local(int ind = 0, float scr = 0.0f) : current_ind(ind), score(scr) {
+    explicit local_clique(int ind, float scr) : current_ind(ind), score(scr) {
         clique_ind_score.clear();
     }
-}local; // for
+}local_clique; // for
 
 #endif
