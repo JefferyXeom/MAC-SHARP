@@ -7,7 +7,7 @@ add_definitions(
     "-Wextra"           # Extra warnings
     "-Wpedantic"        # Strict ISO C++ compliance
     "-g"                # Debug symbols
-    "-O3"              # No optimization (better for debugging)
+    "-O3"               # No optimization (better for debugging)
 #    "-march=native"    # Use native architecture optimizations
 ) # add all warnings and debug symbols
 set(CMAKE_CXX_STANDARD 17) #
@@ -104,7 +104,7 @@ endif()
 #add_compile_options(/arch:AVX)
 # Test executable
 add_executable(test ${TEST_SOURCES})
-target_link_libraries(MAC_SHARP PRIVATE ${PCL_LIBRARIES} igraph::igraph OpenBLAS::OpenBLAS)
+target_link_libraries(MAC_SHARP PRIVATE ${PCL_LIBRARIES} igraph::igraph OpenBLAS::OpenBLAS yaml-cpp::yaml-cpp)
 target_link_libraries(test
     ${PCL_LIBRARIES}
     igraph::igraph

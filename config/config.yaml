@@ -1,0 +1,134 @@
+# inputs and outputs
+# [INFO] All keys are unified to lowerCamelCase style to match C++ variables.
+datasetName: "threeDMatch"
+descriptor: "FPFH"
+cloudSrcPath: "../test_data/src.ply"
+cloudTgtPath: "../test_data/tgt.ply"
+cloudSrcKptPath: "../test_data/src_kpts.pcd"
+cloudTgtKptPath: "../test_data/tgt_kpts.pcd"
+corresPath: "../test_data/corr.txt"
+corresIndexPath: "../test_data/corr_ind.txt"
+gtLabelPath: "../test_data/label.txt"
+gtTfPath: "../test_data/GTmat.txt"
+outputPath: "../test_data/output"
+
+flags:
+  # [INFO] Flag keys are unified to lowerCamelCase.
+  lowInlierRatio: false
+  addOverlap: false
+  noLogs: true
+  secondOrderGraph: true
+  useIcp: false
+  instanceEqual: true
+  clusterInternalEvaluation: true
+  useTopK: false
+  # Others
+  verbose: true
+
+globalVariables:
+  # [INFO] Global variable keys are unified to lowerCamelCase.
+  maxEstimateNum: 2147483647  # INT_MAX
+  metric: "MAE"
+  scoreFormula: "GAUSSIAN_KERNEL" # GAUSSIAN_KERNEL, QUADRATIC_FALLOFF
+  desiredThreads: -1
+  totalIterations: 1 # Number of iterations for registration
+  # Maximal clique search parameters
+  maxTotalCliqueNum: 10000000
+  maxCliqueIterations: 5
+  maxCliqueSize: 15 # Should not be less than 3 + maxCliqueIterations
+  # Clique filtering parameters
+  maxLocalCliqueNum: 10
+
+# 数据集特定配置 - 根据代码中发现的硬编码参数提取
+# Only for evaluations
+datasetConfigs:
+  # 3DMatch数据集配置
+  # 从代码中提取：REEvaThresh = 15, TEEvaThresh = 30, inlierEvaThresh = 0.1
+  threeDMatch:
+    rotationErrorThreshold: 15.0      # 旋转误差阈值，单位：度
+    translationErrorThreshold: 30.0   # 平移误差阈值，单位：厘米
+    inlierEvaluationThreshold: 0.1    # 内点评估阈值，单位：米
+    clusteringAngleThreshold: 5.0     # 聚类角度阈值，单位：度（转换为弧度时 * PI/180）
+    clusteringDistanceThreshold: 0.1  # 聚类距离阈值，与inlierEvaThresh相同
+    successRMSEThreshold: 0.2         # 成功配准的RMSE阈值
+
+  # 3DLoMatch数据集配置
+  # 从代码中提取：与3DMatch相同的参数配置
+  threeDlomatch:
+    rotationErrorThreshold: 15.0      # 旋转误差阈值，单位：度
+    translationErrorThreshold: 30.0   # 平移误差阈值，单位：厘米
+    inlierEvaluationThreshold: 0.1    # 内点评估阈值，单位：米
+    clusteringAngleThreshold: 5.0     # 聚类角度阈值，单位：度
+    clusteringDistanceThreshold: 0.1  # 聚类距离阈值
+    successRMSEThreshold: 0.2         # 成功配准的RMSE阈值
+
+  # KITTI数据集配置
+  # 从代码中提取：REEvaThresh = 5, TEEvaThresh = 180, inlierEvaThresh = 1.8
+  KITTI:
+    rotationErrorThreshold: 5.0       # 旋转误差阈值，单位：度
+    translationErrorThreshold: 180.0  # 平移误差阈值，单位：厘米
+    inlierEvaluationThreshold: 1.8    # 内点评估阈值，单位：米
+    clusteringAngleThreshold: 3.0     # 聚类角度阈值，单位：度
+    clusteringDistanceThreshold: 1.8  # 聚类距离阈值，与inlierEvaThresh相同
+    successRMSEThreshold: 0.2         # 成功配准的RMSE阈值
+
+  # U3M数据集配置
+  # 从代码中提取：特殊处理，使用cloudResolution相关的阈值
+  U3M:
+    rotationErrorThreshold: 5.0       # 成功阈值，RE <= 5
+    translationErrorThreshold: 0.0    # U3M数据集TE设为0
+    inlierEvaluationThresholdMultiplier: 5.0  # inlierEvaThresh = 5 * cloudResolution
+    clusteringAngleThreshold: 3.0     # 聚类角度阈值，单位：度
+    clusteringDistanceThresholdMultiplier: 5.0  # disThresh = 5 * cloudResolution
+    successRMSEThreshold: 5.0         # 成功配准的RMSE阈值（与RE阈值相同）
+
+  # ETH数据集配置（如果需要的话，可以参考其他数据集的默认值）
+  ETH:
+    rotationErrorThreshold: 15.0      # 默认使用与3DMatch相同的配置
+    translationErrorThreshold: 30.0
+    inlierEvaluationThreshold: 0.1
+    clusteringAngleThreshold: 5.0
+    clusteringDistanceThreshold: 0.1
+    successRMSEThreshold: 0.2
+
+# Scenes in each dataset
+datasets:
+  threeDMatch:
+    - 7-scenes-redkitchen
+    - sun3d-home_at-home_at_scan1_2013_jan_1
+    - sun3d-home_md-home_md_scan9_2012_sep_30
+    - sun3d-hotel_uc-scan3
+    - sun3d-hotel_umd-maryland_hotel1
+    - sun3d-hotel_umd-maryland_hotel3
+    - sun3d-mit_76_studyroom-76-1studyroom2
+    - sun3d-mit_lab_hj-lab_hj_tea_nov_2_2012_scan1_erika
+
+  threeDlomatch:
+    - 7-scenes-redkitchen_3dlomatch
+    - sun3d-home_at-home_at_scan1_2013_jan_1_3dlomatch
+    - sun3d-home_md-home_md_scan9_2012_sep_30_3dlomatch
+    - sun3d-hotel_uc-scan3_3dlomatch
+    - sun3d-hotel_umd-maryland_hotel1_3dlomatch
+    - sun3d-hotel_umd-maryland_hotel3_3dlomatch
+    - sun3d-mit_76_studyroom-76-1studyroom2_3dlomatch
+    - sun3d-mit_lab_hj-lab_hj_tea_nov_2_2012_scan1_erika_3dlomatch
+
+  ETH:
+    - gazebo_summer
+    - gazebo_winter
+    - wood_autmn
+    - wood_summer
+
+  # 添加KITTI和U3M数据集的场景列表（如果有的话）
+  KITTI:
+    - sequence_00
+    - sequence_01
+    - sequence_02
+    # 可根据实际KITTI数据集场景添加更多
+
+  U3M:
+    - scene_01
+    - scene_02
+    - scene_03
+    # 可根据实际U3M数据集场景添加更多
+
