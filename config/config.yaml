@@ -15,6 +15,22 @@ gtTfPath: "../test_data/GTmat.txt"
 #outputPath: "../test_data/output"
 outputPath: "../test_data/output2"
 
+LidarParameters:
+  # Below are not used
+  maxRange: 80.0          # in meters
+  minRange: 0.0           # in meters
+  verticalFOV: 30.0       # in degrees
+  horizontalFOV: 360.0    # in degrees
+  verticalRes: 0.4        # in degrees
+  horizontalRes: 0.35     # in degrees
+  numScanLines: 64        # number of scan lines, e.g., 16, 32, 64
+  # Below are used
+  varianceMode: "FIXED" # Options: "FIXED", "DYNAMIC"
+  sigmaRho: 0.01        # in meters
+  sigmaTheta: 0.05      # in degrees
+  sigmaPhi: 0.05        # in degrees
+  NSigma: 1.0           # n sigma for outlier rejection
+
 flags:
   # [INFO] Flag keys are unified to lowerCamelCase.
   lowInlierRatio: false

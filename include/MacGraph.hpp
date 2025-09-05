@@ -37,6 +37,11 @@ class MacGraph {
     // Lightweight dynamic threshold heuristic for QUADRATIC_FALLOFF
     static float dynamicThreshold(float dis, float alpha, float base = 0.0f);
 
+static float calculateVariance(const PrecomputedInfo& p1,
+                               const PrecomputedInfo& p2,
+                               const float sigmaRho,
+                               const float sigmaTheta,
+                               const float sigmaPhi);
     static float otsuThresh(std::vector<float> scores);
 
     // --- findMaximalClique Core methods ---

@@ -34,6 +34,64 @@ float MacGraph::dynamicThreshold(const float dis, const float alpha, const float
     return base + t;
 }
 
+/**
+ * @brief 从两个点的预计算信息中，快速计算它们之间距离的方差。
+ * @details 这是一个高性能的“轻量级”函数，设计用于在紧密循环中调用。
+ * 它不执行任何昂贵的计算（如三角函数），只进行快速的代数运算。
+ * @param p1 第一个点的预计算信息
+ * @param p2 第二个点的预计算信息
+ * @param sigmaRho 传感器径向测量的标准差
+ * @param sigmaTheta 传感器极角测量的标准差 (弧度)
+ * @param sigmaPhi 传感器方位角测量的标准差 (弧度)
+ * @return 两点间距离的方差 (sigma_D^2)
+ */
+float MacGraph::calculateVariance(const PrecomputedInfo& p1,
+                                  const PrecomputedInfo& p2,
+                                  const float sigmaRho,
+                                  const float sigmaTheta,
+                                  const float sigmaPhi) {
+    // 步骤 1: 计算均值距离方向向量 uHatD0
+    // 直接使用预计算的笛卡尔坐标进行向量减法
+    const Eigen::Vector3f d0Vec = p2.cartesianPos - p1.cartesianPos;
+    const float d0 = d0Vec.norm();
+
+    // 如果两点几乎重合，方差为0，避免除以零
+    if (d0 < 1e-6f) {
+        return 0.0f;
+    }
+    const Eigen::Vector3f uHatD0 = d0Vec / d0;
+
+    // 步骤 2: 准备传感器噪声的方差
+    const float varRho = sigmaRho * sigmaRho;
+    const float varTheta = sigmaTheta * sigmaTheta;
+    const float varPhi = sigmaPhi * sigmaPhi;
+
+    float totalVariance = 0.0f;
+    const std::array<PrecomputedInfo, 2> points = {p1, p2};
+
+    // 步骤 3: 循环 P1 和 P2, 累加各自的方差贡献
+    for (const auto& p : points) {
+        // 步骤 3a: 计算点积 (投影系数)
+        // 直接从预计算数据中获取基向量
+        const float dotRho = uHatD0.dot(p.eHatRho);
+        const float dotTheta = uHatD0.dot(p.eHatTheta);
+        const float dotPhi = uHatD0.dot(p.eHatPhi);
+
+        // 步骤 3b: 累加三个方向的方差贡献
+        // 径向 rho 贡献
+        totalVariance += dotRho * dotRho * varRho;
+
+        // 极角 theta 贡献 (使用预计算的 rho)
+        const float cTheta = p.rho * dotTheta;
+        totalVariance += cTheta * cTheta * varTheta;
+
+        // 方位角 phi 贡献 (使用预计算的 rho 和 sinTheta)
+        const float cPhi = p.rho * p.sinTheta * dotPhi;
+        totalVariance += cPhi * cPhi * varPhi;
+    }
+
+    return totalVariance;
+}
 
 // ---- MacGraph calculateGraphThreshold private static helpers ----
 /**
@@ -271,28 +329,66 @@ void MacGraph::build() {
     const float alphaDis = std::max(1e-6f, 10.0f * data_.cloudResolution);
     const float gamma = -1.0f / (2.0f * alphaDis * alphaDis);
     int localTotalEdges = 0; // Count edges after thresholding
+
+    if (config_.varianceMode == VarianceMode::DYNAMIC) {
+        // 遍历一次所有的匹配点对，填充我们新增的预计算成员
+        for (CorresStruct& corres : data_.corres) {
+            // 对源点和目标点分别进行预计算
+            corres.srcPrecomputed.computeFrom(corres.src);
+            corres.tgtPrecomputed.computeFrom(corres.tgt);
+        }
+    }
+
     timerConstGraph.endTiming();
 
+    // Preload sensor noise parameters
+    const float sigmaRho = config_.sigmaRho;     // e.g., 0.01 (meters)
+    const float sigmaTheta = config_.sigmaTheta; // e.g., 0.001 (radians)
+    const float sigmaPhi = config_.sigmaPhi;     // e.g., 0.001 (radians)
+    const float nSigma = config_.nSigma;         // e.g., 1.0 or 2.0
     // -------- First order graph --------
     timerConstGraph.startTiming("construct graph: first order graph");
     switch (config_.scoreFormula) {
         case ScoreFormula::GAUSSIAN_KERNEL: {
             // Parallelize outer loop if OpenMP is available
-#pragma omp parallel for schedule(static) default(none) shared(n, gamma) reduction(+:localTotalEdges)
+#pragma omp parallel for schedule(static) default(none) shared(n, gamma, sigmaRho,sigmaTheta, sigmaPhi, nSigma) reduction(+:localTotalEdges)
             for (int i = 0; i < n; ++i) {
+                const CorresStruct &c1 = data_.corres[i];
                 for (int j = i + 1; j < n; ++j) {
-                    const CorresStruct &c1 = data_.corres[i];
                     const CorresStruct &c2 = data_.corres[j];
-                    const float src_dis = getDistance(c1.src, c2.src);
-                    const float tgt_dis = getDistance(c1.tgt, c2.tgt);
-                    const float diff = src_dis - tgt_dis;
-                    float w = std::exp(diff * diff * gamma);
-                    // Hard cutoff at 0.8 (consistent with original implementation)
-                    // kitti is 0.9 in the original code.
-                    if (w < 0.8f) w = 0.0f;
+                    const float srcDis = getDistance(c1.src, c2.src);
+                    const float tgtDis = getDistance(c1.tgt, c2.tgt);
+                    const float dDiff = srcDis - tgtDis;
+                    float w = 0; //
+                    if (config_.varianceMode == VarianceMode::DYNAMIC) {
+                        // ===============================================
+                        // ===========  方案 1: 动态方差 (新)  ===========
+                        // =======================
+                        // 调用轻量级成员函数计算组合方差
+                        const float sigmaDSqSrc = calculateVariance(c1.srcPrecomputed, c2.srcPrecomputed, sigmaRho, sigmaTheta, sigmaPhi);
+                        const float sigmaDSqTgt = calculateVariance(c1.tgtPrecomputed, c2.tgtPrecomputed, sigmaRho, sigmaTheta, sigmaPhi);
+
+                        if (const float sigmaIjSquared = sigmaDSqSrc + sigmaDSqTgt; dDiff < sigmaIjSquared) {
+                            w = std::exp(- (dDiff * dDiff) / (2.0f * sigmaIjSquared));
+                        }
+                    } else { // VarianceMode::FIXED
+                        // ==================================================
+                        // ===========  方案 2: 传统固定方差 (旧)  ===========
+                        // ==================================================
+                        // Hard cutoff at 0.8 (consistent with original implementation)
+                        // kitti is 0.9 in the original code.
+
+                        w = std::exp(dDiff * dDiff * gamma);
+                        // Hard cutoff at 0.8 (consistent with original implementation)
+                        if (w < 0.8f) w = 0.0f;
+
+                        // Hard cutoff at 0.8 (consistent with original implementation)
+                        // if (dDiff < 0.1) w = std::exp(dDiff * dDiff * gamma);
+                    }
                     graphEigen_(i, j) = w;
                     graphEigen_(j, i) = w;
                     if (w >= 0.8f) localTotalEdges++;
+                    // if (dDiff < 0.1) localTotalEdges++;
                 }
             }
             break;
@@ -429,6 +525,7 @@ void MacGraph::calculateTriangularWeights() {
 
 #pragma omp parallel for schedule(static) default(none) shared(n, graphVertex_, graphEigen_) reduction(+: totalTriangleWeightSum_, totalPossibleTriangleNum_)
     for (int i = 0; i < n; ++i) {
+        // LOG_DEBUG("current i: " << i);
         if (const int neighborSize = graphVertex_[i].degree; neighborSize > 1) {
             float acc = 0.0f; // index i vertex neighbor triangle weight summation
             for (int j = 0; j < neighborSize; ++j) {
@@ -436,9 +533,9 @@ void MacGraph::calculateTriangularWeights() {
                 for (int k = j + 1; k < neighborSize; ++k) {
                     if (const int neighborIndex2 = graphVertex_[i].neighborIndices[k]; graphEigen_(neighborIndex1,
                         neighborIndex2) != 0.0f) {
-                        acc += std::pow(
+                        acc += std::cbrt(
                             graphEigen_(i, neighborIndex2) * graphEigen_(i, neighborIndex2) * graphEigen_(
-                                neighborIndex1, neighborIndex2), 1.0f / 3.0f);
+                                neighborIndex1, neighborIndex2));
                     }
                 }
             }

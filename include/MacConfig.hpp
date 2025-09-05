@@ -87,6 +87,13 @@ struct MacConfig {
     std::string gtTfPath; // Ground truth transformation file path.
     std::string outputPath; // Output directory for results and logs.
 
+    // --- Lidar Configuration ---
+    VarianceMode varianceMode = VarianceMode::DYNAMIC; // 默认为动态方案
+    float sigmaRho = 0.01f;        // in meters
+    float sigmaTheta = 0.05f;      // in degrees
+    float sigmaPhi = 0.05f;        // in degrees
+    float nSigma = 1.0f;           // n sigma for outlier rejection
+
     // --- Global Configuration Flags ---
     bool flagLowInlierRatio = false; // Flag for low inlier ratio scenarios
     bool flagAddOverlap = false; // Flag for adding overlap info
@@ -137,11 +144,26 @@ private:
     std::map<std::string, DatasetConfig> availableDatasetConfigs;
 
     /**
-     * @brief 解析评分公式字符串
+     * @brief 解析雷达方差模式字符串
+     */
+    static VarianceMode parseVarianceMode(const std::string &modeStr) {
+        if (modeStr == "FIXED") return VarianceMode::FIXED;
+        if (modeStr == "DYNAMIC") return VarianceMode::DYNAMIC;
+        return VarianceMode::DYNAMIC; // default
+    }
+
+
+    /**
+     * @brief Parses a string to its corresponding ScoreFormula enum value.
+     * @param formulaStr The string from the YAML file.
+     * @return The ScoreFormula enum value.
+     * @throws std::invalid_argument if the string is not a valid formula name.
      */
     static ScoreFormula parseScoreFormula(const std::string &formulaStr) {
         if (formulaStr == "GAUSSIAN_KERNEL") return ScoreFormula::GAUSSIAN_KERNEL;
         if (formulaStr == "QUADRATIC_FALLOFF") return ScoreFormula::QUADRATIC_FALLOFF;
+        // For robustness, throw an exception for unknown values
+        LOG_WARNING("Unknown ScoreFormula: " + formulaStr + ". Defaulting to GAUSSIAN_KERNEL.");
         return ScoreFormula::GAUSSIAN_KERNEL; // default
     }
 
@@ -213,6 +235,17 @@ public:
             gtLabelPath = config["gtLabelPath"].as<std::string>();
             gtTfPath = config["gtTfPath"].as<std::string>();
             outputPath = config["outputPath"].as<std::string>();
+
+            // --- Loading Lidar Configuration ---
+            if (config["LidarConfig"]) {
+                const auto &lidarConfig = config["LidarConfig"];
+                varianceMode = parseVarianceMode(lidarConfig["varianceMode"].as<std::string>("DYNAMIC"));
+                sigmaRho = lidarConfig["sigmaRho"].as<float>(sigmaRho);
+                sigmaPhi = lidarConfig["lidarConfig"]["sigmaPhi"].as<float>(sigmaPhi);
+                sigmaTheta = lidarConfig["sigmaTheta"].as<float>(sigmaTheta);
+                nSigma = lidarConfig["NSigma"].as<float>(nSigma);
+            }
+
             // --- Loading Flags ---
             if (config["flags"]) {
                 const auto &flags = config["flags"];
