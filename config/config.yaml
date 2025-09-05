@@ -1,6 +1,8 @@
 # inputs and outputs
 # [INFO] All keys are unified to lowerCamelCase style to match C++ variables.
-datasetName: "threeDMatch"
+# indicates the evaluation parameters
+currentDataset: "3DMatch" # Options: "3DMatch", "3DLoMatch", "KITTI", "U3M", "ETH"
+
 descriptor: "FPFH"
 cloudSrcPath: "../test_data/src.ply"
 cloudTgtPath: "../test_data/tgt.ply"
@@ -10,19 +12,19 @@ corresPath: "../test_data/corr.txt"
 corresIndexPath: "../test_data/corr_ind.txt"
 gtLabelPath: "../test_data/label.txt"
 gtTfPath: "../test_data/GTmat.txt"
-outputPath: "../test_data/output"
+#outputPath: "../test_data/output"
+outputPath: "../test_data/output2"
 
 flags:
   # [INFO] Flag keys are unified to lowerCamelCase.
   lowInlierRatio: false
   addOverlap: false
   noLogs: true
-  secondOrderGraph: true
+  secondOrderGraph: false
   useIcp: false
   instanceEqual: true
   clusterInternalEvaluation: true
   useTopK: false
-  # Others
   verbose: true
 
 globalVariables:
@@ -37,9 +39,16 @@ globalVariables:
   maxCliqueIterations: 5
   maxCliqueSize: 15 # Should not be less than 3 + maxCliqueIterations
   # Clique filtering parameters
-  maxLocalCliqueNum: 10
+  maxLocalCliqueNum: 11 # 因为逻辑不一样，源码里面写得是>10，我们这里写的是==maxLocalCliqueNum
 
-# 数据集特定配置 - 根据代码中发现的硬编码参数提取
+systemControls:
+  verbose: true # Not used. Obviously, we hope at least the error messages are printed, though generally they are not print if there is no error.
+  logLevel: "DEBUG" # 0=DEBUG, 1=INFO, 2=WARNING, 3=CRITICAL, 4=ERROR
+  saveLogs: true # Not implemented yet
+  saveResults: true # Not implemented yet
+
+
+# 数据集特定配置
 # Only for evaluations
 datasetConfigs:
   # 3DMatch数据集配置

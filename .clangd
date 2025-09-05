@@ -1,0 +1,4 @@
+CompileFlags:
+  Add:
+    - -isystem
+    E:/Microsoft_Visual_Studio/2022/community/VC/Tools/MSVC/14.44.35207/include

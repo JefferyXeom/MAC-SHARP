@@ -41,7 +41,27 @@ cd MAC_SHARP
 
 ```
 
+## Tips in code
 
+### 1. cpp standard
+
+Our code is written in C++17 standard. If you want to compile it, please make sure your compiler supports C++17 or later.
+However, we only use some of the C++17 features, so you can also compile it with C++14 or lower standard by removing the following keywords:
+
+1. Inline variable: Those only used for cross file reference. There is replacement in lower standards.
+2. nodiscard: The one used for functions that return a value that should not be ignored.
+
+
+### 2. ??
+
+All section bounded with
+``` cpp
+//---------------------------- Evaluation part ----------------------------
+...
+// -------------------------------------------------------------------------
+```
+is for evaluation only. They are irrelevant to the algorithm itself and use ground truth to compute the error.
+You can remove them if you want to use the code in real applications.
 
 
 

@@ -1,7 +1,6 @@
 //
+#pragma once
 
-#ifndef _MAC_SHARP_
-#define _MAC_SHARP_
 
 
 #define constE 2.718282
@@ -39,6 +38,3 @@
 //
 
 
-
-
-#endif
