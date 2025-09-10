@@ -21,6 +21,9 @@
 #include <pcl/segmentation/impl/conditional_euclidean_clustering.hpp>
 
 #include "MacUtils.hpp"
+// [Added] Monitor inline wrappers for internal sub-stage timing/metrics.
+#include "MacMonitor.hpp"  // MON_ENTER / MON_RECORD / MON_SET_KV / MON_SET_NOTE
+
 
 MacRtHypothesis::MacRtHypothesis(MacData &data, const MacConfig &config, const MacGraph &graph, MacResult &result)
     : data_(data),
@@ -53,13 +56,18 @@ void MacRtHypothesis::sampleCandidates(const MacGraph &graph) {
 
     // Assign current index
     // Later we will sort the vertexCliqueSupports based on score, so we need to keep track of original index
+    // ---- [MON] hypo/sample/init_index ----
+    MON_ENTER("hypo/sample/init_index");
     // #pragma omp parallel for
     for (int i = 0; i < data_.totalCorresNum; i++) {
         vertexCliqueSupports[i].vertexIndex = i;
     }
+    MON_RECORD(); // close hypo/sample/init_index
 
     // compute the weight of each clique
     // Weight of each clique is the sum of the weights of all edges in the clique
+    // ---- [MON] hypo/sample/score_aggregation ----
+    MON_ENTER("hypo/sample/score_aggregation");
     const auto &graphMatrix = graph.getGraphEigen();
     // #pragma omp parallel for
     for (int i = 0; i < data_.totalCliqueNum; i++) {
@@ -97,10 +105,15 @@ void MacRtHypothesis::sampleCandidates(const MacGraph &graph) {
             avg_score += vertexCliqueSupports[i].score;
         }
     }
+    // If you maintain any summary like mean/median, you can also record it here.
+    // e.g., MON_SET_KV("hypo/score_mean", scoreMean);
+    MON_RECORD(); // close hypo/sample/score_aggregation
 
     // Attention! From now on, vertexCliqueSupports is sorted based on score
     std::stable_sort(vertexCliqueSupports.begin(), vertexCliqueSupports.end(), compareVertexCliqueScore); //所有节点从大到小排序
 
+    // ---- [MON] hypo/sample/select_vertices ----
+    MON_ENTER("hypo/sample/select_vertices");
     // 如果clique数目小于等于correspondence数目, clique number is small enough
     if (data_.totalCliqueNum <= data_.totalCorresNum) {
         for (int i = 0; i < data_.totalCliqueNum; i++) {
@@ -108,16 +121,22 @@ void MacRtHypothesis::sampleCandidates(const MacGraph &graph) {
             sampledCliqueIndices_.push_back(i);
         }
         for (int i = 0; i < data_.totalCorresNum; i++) {
-            if (!vertexCliqueSupports[i].score) {
+            if (vertexCliqueSupports[i].score == 0.0f) {
                 // skip if the score of correspondence is 0
                 continue;
             }
             sampledCorresIndices_.push_back(vertexCliqueSupports[i].vertexIndex);
             // only keep index whose correspondence has a non-zero score
         }
+        MON_CANCEL();
         return;
     }
+    MON_SET_KV("hypo/sampled_correspondences",
+               static_cast<int>(sampledCorresIndices_.size())); // replace with your actual container if different
+    MON_RECORD(); // close hypo/sample/select_vertices
 
+    // ---- [MON] hypo/sample/select_cliques ----
+    MON_ENTER("hypo/sample/select_cliques");
     std::unordered_set<int> visitedCliqueIndex;
     // Otherwise we only keep the correspondences whose score is greater than the average score
     avg_score /= static_cast<float>(data_.totalCorresNum);
@@ -130,7 +149,7 @@ void MacRtHypothesis::sampleCandidates(const MacGraph &graph) {
         // Only keep index of correspondence whose score is higher than the average score, ordered
         // sort the clique_ind_score of each correspondence from large to small
         std::stable_sort(vertexCliqueSupports[i].participatingCliques.begin(),
-                  vertexCliqueSupports[i].participatingCliques.end(), compareLocalScore); //局部从大到小排序
+                         vertexCliqueSupports[i].participatingCliques.end(), compareLocalScore); //局部从大到小排序
         int selectedCnt = 1;
         // Check top 10 neighbors of each correspondence in high score clique
         for (int j = 0; j < vertexCliqueSupports[i].participatingCliques.size(); ++j) {
@@ -148,6 +167,9 @@ void MacRtHypothesis::sampleCandidates(const MacGraph &graph) {
     // Its neighbor has high score, and it is in its neighbor's high score clique
     sampledCliqueIndices_.assign(visitedCliqueIndex.begin(), visitedCliqueIndex.end()); // no order
     std::stable_sort(sampledCliqueIndices_.begin(), sampledCliqueIndices_.end()); // ordered
+    MON_SET_KV("hypo/sampled_cliques",
+               static_cast<int>(sampledCliqueIndices_.size())); // replace with your actual container if different
+    MON_RECORD(); // close hypo/sample/select_cliques
 
     // ---------------------------- Evaluation part ----------------------------
     // TODO: 这里加上检查最大若干团是否包含真实团
@@ -162,6 +184,8 @@ void MacRtHypothesis::sampleCandidates(const MacGraph &graph) {
  */
 void MacRtHypothesis::prepareSampledData() {
     LOG_INFO("--- 2. Preparing data from sampled correspondences ---");
+    // ---- [MON] hypo/prepare/gather_pairs ----
+    MON_ENTER("hypo/prepare/gather_pairs");
 
     // 清空旧数据，确保每次运行都是干净的状态
     sampledCorr_.clear();
@@ -210,17 +234,26 @@ void MacRtHypothesis::prepareSampledData() {
     // outFile2.close();
 
     // 这部分统计代码可以保留在这里，因为它紧跟着数据的创建
+    float inlierRatioAfterSampling = 0.0f;
     if (!sampledCorresIndices_.empty()) {
-        LOG_INFO("Inlier ratio after sampling: "
-            << static_cast<float>(inlierNumAfterSampling) / static_cast<float>(sampledCorresIndices_.size()) * 100
-            << "%");
+        inlierRatioAfterSampling = static_cast<float>(inlierNumAfterSampling) / static_cast<float>(sampledCorresIndices_
+                                       .size()) * 100;
+        LOG_INFO("Inlier ratio after sampling: " << inlierRatioAfterSampling << "%");
         // -------------------------------------------------------------------------
     }
+    MON_SET_KV("hypo/sampled_count",
+               static_cast<int>(sampledCorresIndices_.size()));
+    // If you compute inlier ratio after sampling, record it here:
+    MON_SET_KV("hypo/inlier_num_after_sampling", inlierNumAfterSampling);
+    MON_SET_KV("hypo/inlier_ratio_after_sampling", inlierRatioAfterSampling); // replace with your actual variable
+    MON_RECORD(); // close hypo/prepare/gather_pairs
 }
 
 
 void MacRtHypothesis::generateHypotheses() {
     LOG_INFO("--- 3. Generating initial hypotheses from sampled cliques ---");
+    // ---- [MON] hypo/generate/loop ----
+    MON_ENTER("hypo/generate/loop");
 
     // 1. Estimate the transformation matrix by the points in the clique (SVD)
     // 遍历所有采样的团，生成假设
@@ -262,7 +295,8 @@ void MacRtHypothesis::generateHypotheses() {
             }
         }
 
-        std::stable_sort(currentCliqueVertexesIndex.begin(), currentCliqueVertexesIndex.end()); // sort before get intersection
+        std::stable_sort(currentCliqueVertexesIndex.begin(), currentCliqueVertexesIndex.end());
+        // sort before get intersection
 
         // If the clique is too small, skip it
         if (triangularScoresInFilteredClique.size() < 3) {
@@ -272,11 +306,11 @@ void MacRtHypothesis::generateHypotheses() {
         }
 
         Eigen::VectorXf scoreVec = Eigen::Map<Eigen::VectorXf>(triangularScoresInFilteredClique.data(),
-                                                                   triangularScoresInFilteredClique.size());;
+                                                               triangularScoresInFilteredClique.size());;
         if (!config_.flagInstanceEqual) {
             // Use the triangle score as the SVD weight
             scoreVec = Eigen::Map<Eigen::VectorXf>(triangularScoresInFilteredClique.data(),
-                                                                   triangularScoresInFilteredClique.size());
+                                                   triangularScoresInFilteredClique.size());
             scoreVec /= scoreVec.maxCoeff(); // normalize to [0, 1]
         } else {
             scoreVec.setOnes();
@@ -286,12 +320,14 @@ void MacRtHypothesis::generateHypotheses() {
 
         // The threshold logic must be handled in config stage
         const float globalScore = oamae(data_.cloudSrcKpts, data_.cloudTgtKpts, estTransMat, data_.tgtSrc,
-                                         config_.currentDatasetConfig.inlierEvaThresh);
-        const float localScore = transScoreByLocalClique(srcPts, tgtPts, estTransMat, config_.currentDatasetConfig.inlierEvaThresh, config_.metric);
+                                        config_.currentDatasetConfig.inlierEvaThresh);
+        const float localScore = transScoreByLocalClique(srcPts, tgtPts, estTransMat,
+                                                         config_.currentDatasetConfig.inlierEvaThresh, config_.metric);
 
         if (globalScore > 0) {
             // #pragma omp critical
             TransformHypothesis currentHypo;
+            currentHypo.originalIndex_ = i;
             currentHypo.transform_ = estTransMat;
             currentHypo.globalScore_ = globalScore;
             currentHypo.localScore_ = localScore;
@@ -327,6 +363,12 @@ void MacRtHypothesis::generateHypotheses() {
     } else {
         LOG_WARNING("No valid individual hypothesis was found.");
     }
+
+    MON_SET_KV("hypo/hypotheses_generated",
+               static_cast<int>(hypotheses_.size())); // replace with vector name if different
+    // Optional (if available):
+    MON_SET_KV("hypo/best_individual_score", bestIndividualScore);
+    MON_RECORD(); // close hypo/generate/loop
 }
 
 /**
@@ -334,6 +376,8 @@ void MacRtHypothesis::generateHypotheses() {
  */
 void MacRtHypothesis::sortAndFilterHypotheses() {
     LOG_INFO("--- 4. Sorting and filtering hypotheses ---");
+    // ---- [MON] hypo/sort_filter/sort ----
+    MON_ENTER("hypo/sort_filter/sort");
 
     if (hypotheses_.empty()) {
         LOG_WARNING("Hypotheses list is empty, nothing to sort or filter.");
@@ -345,16 +389,20 @@ void MacRtHypothesis::sortAndFilterHypotheses() {
     // ==============================================================================
     // 我们不再需要复杂的间接排序，因为每个 TransformHypothesis 对象都包含了自己的分数
     std::stable_sort(hypotheses_.begin(), hypotheses_.end(),
-              [](const TransformHypothesis &a, const TransformHypothesis &b) {
-                  return a.globalScore_ > b.globalScore_;
-              });
+                     [](const TransformHypothesis &a, const TransformHypothesis &b) {
+                         return a.globalScore_ > b.globalScore_;
+                     });
     // From now on, hypotheses_ is sorted by globalScore_ in descending order
+    MON_RECORD(); // close hypo/sort_filter/sort
 
     // ==============================================================================
     // ==         核心步骤 2: 筛选出 Top-K 个结果                  ==
     // ==============================================================================
+    // ---- [MON] hypo/sort_filter/filter ----
+    MON_ENTER("hypo/sort_filter/filter");
     const int totalEstimateNum = static_cast<int>(hypotheses_.size());
-    const int selectedNum = std::min(totalEstimateNum, config_.maxEstimateNum);
+    // Force reduce the number of hypotheses!!!!!!!!!!!!!
+    const int selectedNum = std::min(data_.totalCorresNum, std::min(totalEstimateNum, config_.maxEstimateNum));
     // k is selectedNum
     if (totalEstimateNum > selectedNum) {
         LOG_INFO("Too many hypotheses (" << totalEstimateNum << "), choosing top "
@@ -392,6 +440,11 @@ void MacRtHypothesis::sortAndFilterHypotheses() {
 
     LOG_INFO("Sorting and filtering complete. " << hypotheses_.size()
         << " hypotheses remain. Correct estimations: " << numCorrectHypotheses_);
+    MON_SET_KV("hypo/selected_topk",
+               static_cast<int>(hypotheses_.size())); // after truncation
+    // Optional (if maintained in this function):
+    MON_SET_KV("hypo/correct_estimations", numCorrectHypotheses_);
+    MON_RECORD(); // close hypo/sort_filter/filter
 }
 
 // ################################################################
@@ -400,7 +453,8 @@ float g_angleThreshold = 5.0 * M_PI / 180; //5 degree
 float g_distanceThreshold = 0.1;
 
 
-bool MacRtHypothesis::EnforceSimilarity1(const pcl::PointXYZINormal &pointA, const pcl::PointXYZINormal &pointB, float squared_distance) {
+bool MacRtHypothesis::EnforceSimilarity1(const pcl::PointXYZINormal &pointA, const pcl::PointXYZINormal &pointB,
+                                         float squared_distance) {
     if (std::isnan(pointA.normal_x) || std::isnan(pointB.normal_x)) {
         return false;
     }
@@ -412,9 +466,11 @@ bool MacRtHypothesis::EnforceSimilarity1(const pcl::PointXYZINormal &pointA, con
     return false;
 }
 
-int MacRtHypothesis::clusterTransformationByRotation(const std::vector<Eigen::Matrix3f> &Rs, const std::vector<Eigen::Vector3f> &Ts,
-                                    const float angleThresh, const float disThresh, pcl::IndicesClusters &clusters,
-                                    pcl::PointCloud<pcl::PointXYZINormal>::Ptr &trans) {
+int MacRtHypothesis::clusterTransformationByRotation(
+    const std::vector<Eigen::Matrix3f, Eigen::aligned_allocator<Eigen::Matrix3f> > &Rs,
+    const std::vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f> > &Ts,
+    const float angleThresh, const float disThresh, pcl::IndicesClusters &clusters,
+    pcl::PointCloud<pcl::PointXYZINormal>::Ptr &trans) {
     if (Rs.empty() || Ts.empty() || Rs.size() != Ts.size()) {
         LOG_ERROR("Rs and Ts are empty or not the same size!");
         return -1;
@@ -464,11 +520,13 @@ int MacRtHypothesis::clusterTransformationByRotation(const std::vector<Eigen::Ma
 
 void MacRtHypothesis::clusterHypotheses() {
     LOG_INFO("--- 5. Clustering hypotheses ---");
+    // ---- [MON] hypo/cluster/build ----
+    MON_ENTER("hypo/cluster/build");
 
     // 从 hypotheses_ 成员中提取出旋转(R)和平移(T)矩阵列表
     // 这是聚类函数需要的输入
-    std::vector<Eigen::Matrix3f> Rs;
-    std::vector<Eigen::Vector3f> Ts;
+    std::vector<Eigen::Matrix3f, Eigen::aligned_allocator<Eigen::Matrix3f> > Rs;
+    std::vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f> > Ts;
     Rs.reserve(hypotheses_.size());
     Ts.reserve(hypotheses_.size());
     for (const auto &hypo: hypotheses_) {
@@ -490,6 +548,25 @@ void MacRtHypothesis::clusterHypotheses() {
     clusterTransformationByRotation(Rs, Ts, angleThresh, disThresh, this->clusters_, this->transPoints_);
 
     LOG_INFO("Found " << clusters_.size() << " clusters from " << hypotheses_.size() << " hypotheses.");
+    // ---- [MON] hypo/cluster/metrics: compute cluster stats ----
+    // Compute largest cluster size and its index.
+    int largestClusterSize = 0;
+    int largestClusterIndex = -1;
+    /**
+     * PCL's IndicesClusters = std::vector<pcl::PointIndices>.
+     * Each cluster has 'indices' storing member point indices.
+     */
+    for (int ci = 0; ci < static_cast<int>(clusters_.size()); ++ci) {
+        const int sz = static_cast<int>(clusters_[ci].indices.size());
+        if (sz > largestClusterSize) {
+            largestClusterSize = sz;
+            largestClusterIndex = ci;
+        }
+    }
+    MON_SET_KV("hypo/num_clusters", static_cast<int>(clusters_.size()));
+    MON_SET_KV("hypo/largest_cluster_size", largestClusterSize);
+    MON_SET_KV("hypo/largest_cluster_index", largestClusterIndex);
+    MON_RECORD(); // close hypo/cluster/build
 }
 
 // Fallback function when no clusters are found
@@ -503,71 +580,73 @@ bool MacRtHypothesis::handleClusteringFailure() {
 
     this->winningTransform_ = bestIndividualHypothesis_.transform_;
 
-    // // ---------------------------- Evaluation part ----------------------------
-    //     if (macConfig.datasetName == "U3M") {
-    //         macResult.RE = rmseCompute(cloudSrc, cloudTgt, bestEstIndividual, gtMat, cloudResolution);
-    //         macResult.TE = 0;
-    //     } else {
-    //         if (!flagFound) {
-    //             flagFound = evaluationEst(bestEstIndividual, gtMat, REEvaThresh, TEEvaThresh, macResult.RE,
-    //                                       macResult.TE);
-    //         }
-    //         tmpBest = bestEstIndividual;
-    //         bestGlobalScore = 0;
-    //         postRefinement(sampledCorr, sampledCorrSrc, sampledCorrTgt, bestEstIndividual, bestGlobalScore,
-    //                        inlierEvaThresh, 20,
-    //                        macConfig.metric);
-    //     }
-    //     if (macConfig.datasetName == "U3M") {
-    //         if (macResult.RE <= 5) {
-    //             std::cout << macResult.RE << std::endl;
-    //             std::cout << bestEstIndividual << std::endl;
-    //             return true;
-    //         }
-    //         return false;
-    //     }
-    //     //            float rmse = RMSE_compute_scene(cloudSrc, cloudTgt, bestEst1, GTmat, 0.0375);
-    //     //            std::cout << "RMSE: " << rmse <<endl;
-    //     if (flagFound) {
-    //         float newRe, newTe;
-    //         evaluationEst(bestEstIndividual, gtMat, REEvaThresh, TEEvaThresh, newRe, newTe);
-    //
-    //         if (newRe < macResult.RE && newTe < macResult.TE) {
-    //             std::cout << "est_trans updated!!!" << std::endl;
-    //             std::cout << "RE=" << newRe << " " << "TE=" << newTe << std::endl;
-    //             std::cout << bestEstIndividual << std::endl;
-    //         } else {
-    //             bestEstIndividual = tmpBest;
-    //             std::cout << "RE=" << macResult.RE << " " << "TE=" << macResult.TE << std::endl;
-    //             std::cout << bestEstIndividual << std::endl;
-    //         }
-    //         macResult.RE = newRe;
-    //         macResult.TE = newTe;
-    //         //                if(rmse > 0.2) return false;
-    //         //                else return true;
+    // ---------------------------- Evaluation part ----------------------------
+    // if (config_.datasetName == "U3M") {
+    //     result_.RE = rmseCompute(cloudSrc, cloudTgt, bestIndividualHypothesis_, gtMat, cloudResolution);
+    //     result_.TE = 0;
+    // } else {
+    if (!flagFound_) {
+        flagFound_ = evaluationEst(bestIndividualHypothesis_.transform_, data_.gtTransform,
+                                   config_.getCurrentDatasetConfig().reThresh,
+                                   config_.getCurrentDatasetConfig().teThresh, result_.RE,
+                                   result_.TE);
+    }
+    finalBestTransform_ = bestIndividualHypothesis_.transform_;
+    float bestGlobalScore = 0;
+    postRefinement(sampledCorr_, sampledCorrSrc_, sampledCorrTgt_, bestIndividualHypothesis_.transform_,
+                   bestGlobalScore,
+                   config_.getCurrentDatasetConfig().inlierEvaThresh, 20,
+                   config_.metric);
+    // }
+    // if (config_.datasetName == "U3M") {
+    //     if (result_.RE <= 5) {
+    //         std::cout << result_.RE << std::endl;
+    //         std::cout << bestIndividualHypothesis_ << std::endl;
     //         return true;
     //     }
-    //     float newRe, newTe;
-    //     flagFound = evaluationEst(bestEstIndividual, gtMat, REEvaThresh, TEEvaThresh, newRe, newTe);
-    //     if (flagFound) {
-    //         macResult.RE = newRe;
-    //         macResult.TE = newTe;
-    //         std::cout << "est_trans corrected!!!" << std::endl;
-    //         std::cout << "RE=" << macResult.RE << " " << "TE=" << macResult.TE << std::endl;
-    //         std::cout << bestEstIndividual << std::endl;
-    //         return true;
-    //     }
-    //     std::cout << "RE=" << macResult.RE << " " << "TE=" << macResult.TE << std::endl;
     //     return false;
-    //     // -------------------------------------------------------------------------
-    //     //                if(rmse > 0.2) return false;
-    //     //                else return true;
+    // }
+    float rmse = rmseCompute(data_.cloudSrc, data_.cloudTgt, finalBestTransform_, data_.gtTransform,
+                             config_.getCurrentDatasetConfig().effectiveResolution());
+    std::cout << "RMSE: " << rmse << std::endl;
+    if (flagFound_) {
+        float newRe, newTe;
+        evaluationEst(bestIndividualHypothesis_.transform_, data_.gtTransform,
+                      config_.getCurrentDatasetConfig().reThresh, config_.getCurrentDatasetConfig().teThresh, newRe,
+                      newTe);
 
-    // 调用精炼
-    // postRefinement(finalBestTransform_, sampledCorr_); // 假设 postRefinement 已成为私有方法
+        if (newRe < result_.RE && newTe < result_.TE) {
+            std::cout << "est_trans updated!!!" << std::endl;
+            std::cout << "RE=" << newRe << " " << "TE=" << newTe << std::endl;
+            std::cout << bestIndividualHypothesis_.transform_ << std::endl;
+        } else {
+            std::cout << "RE=" << result_.RE << " " << "TE=" << result_.TE << std::endl;
+            std::cout << finalBestTransform_ << std::endl;
+        }
+        result_.RE = newRe;
+        result_.TE = newTe;
+        //                if(rmse > 0.2) return false;
+        //                else return true;
+        return true;
+    }
+    float newRe, newTe;
+    flagFound_ = evaluationEst(finalBestTransform_, data_.gtTransform,
+                               config_.getCurrentDatasetConfig().reThresh, config_.getCurrentDatasetConfig().teThresh,
+                               newRe, newTe);
+    if (flagFound_) {
+        result_.RE = newRe;
+        result_.TE = newTe;
+        std::cout << "est_trans corrected!!!" << std::endl;
+        std::cout << "RE=" << result_.RE << " " << "TE=" << result_.TE << std::endl;
+        std::cout << finalBestTransform_ << std::endl;
+        return true;
+    }
+    std::cout << "RE=" << result_.RE << " " << "TE=" << result_.TE << std::endl;
+    return false;
+    // -------------------------------------------------------------------------
+    //                if(rmse > 0.2) return false;
+    //                else return true;
 
-    // 返回 true，告诉主流程任务已完成，可以提前结束
-    return true;
 }
 
 /**
@@ -603,14 +682,14 @@ void MacRtHypothesis::selectBestConsensus() {
 
     const Eigen::Matrix4f bestIndividualInv = bestIndividualHypothesis_.transform_.inverse();
 
-// #pragma omp parallel for schedule(static) default(none) shared(sortedClusters_, hypotheses_, bestIndividualInv, bestSimilarity_, bestSimClusterOriginalIndex_, bestSimHypoInClusterIndex_)
+    // #pragma omp parallel for schedule(static) default(none) shared(sortedClusters_, hypotheses_, bestIndividualInv, bestSimilarity_, bestSimClusterOriginalIndex_, bestSimHypoInClusterIndex_)
     for (const auto &clusterInfo: sortedClusters_) {
         const int clusterIdx = clusterInfo.clusterIndex;
         for (size_t i = 0; i < clusters_[clusterIdx].indices.size(); ++i) {
             const int hypoIdx = clusters_[clusterIdx].indices[i];
             const auto &hypo = hypotheses_[hypoIdx];
             const float similarity = (bestIndividualInv * hypo.transform_ - Eigen::Matrix4f::Identity()).norm();
-// #pragma omp critical
+            // #pragma omp critical
             if (similarity < bestSimilarity_) {
                 bestSimilarity_ = similarity;
                 bestSimClusterOriginalIndex_ = clusterIdx;
@@ -631,14 +710,16 @@ void MacRtHypothesis::selectBestConsensus() {
  */
 void MacRtHypothesis::findConsensusHypotheses() {
     LOG_INFO("--- 7. Finding best consensus hypothesis from clusters ---");
+    // ---- [MON] hypo/consensus/select ----
+    MON_ENTER("hypo/consensus/select");
 
     // 临时变量，用于存储每个聚类的代表(中心)假设，以及所有聚类包含的对应关系索引
-    std::vector<TransformHypothesis> clusterCenterHypotheses;
-    std::vector<std::vector<int> > subClusterCorrIndices;
+    std::vector<TransformHypothesis, Eigen::aligned_allocator<TransformHypothesis> > clusterCenterHypotheses;
+
 
     // Reserve space to avoid multiple allocations
     clusterCenterHypotheses.reserve(sortedClusters_.size());
-    subClusterCorrIndices.reserve(sortedClusters_.size());
+    subClusterCorrIndices_.reserve(sortedClusters_.size());
     // temporary setup variable clusterIndices for trace back cluster index
     // There are two ways to improve, either use the cluster_ itself for iteration
     // either change the struct hypotheses to include the cluster index
@@ -659,7 +740,8 @@ void MacRtHypothesis::findConsensusHypotheses() {
         int centerHypoIndex = clusterHypoIndices[0];
         float maxLocalScore = hypotheses_[centerHypoIndex].localScore_;
         for (size_t i = 1; i < clusterHypoIndices.size(); ++i) {
-            if (const int currentHypoIndex = clusterHypoIndices[i]; hypotheses_[currentHypoIndex].localScore_ > maxLocalScore) {
+            if (const int currentHypoIndex = clusterHypoIndices[i];
+                hypotheses_[currentHypoIndex].localScore_ > maxLocalScore) {
                 maxLocalScore = hypotheses_[currentHypoIndex].localScore_;
                 centerHypoIndex = currentHypoIndex;
             }
@@ -674,7 +756,7 @@ void MacRtHypothesis::findConsensusHypotheses() {
             currentClusterUnionIndices = vectorsUnion(currentClusterUnionIndices,
                                                       hypotheses_[hypoIdx].sourceCorrespondenceIndices_);
         }
-        subClusterCorrIndices.push_back(currentClusterUnionIndices);
+        subClusterCorrIndices_.push_back(currentClusterUnionIndices);
     }
 
     if (clusterCenterHypotheses.empty()) {
@@ -685,11 +767,11 @@ void MacRtHypothesis::findConsensusHypotheses() {
 
     // --- 步骤 2: 准备用于 OAMAE 精确评估的“精英子集”，这部分是线性的 ---
     std::vector<int> globalUnionCorrIndices;
-    for (const auto &subUnion: subClusterCorrIndices) {
+    for (const auto &subUnion: subClusterCorrIndices_) {
         globalUnionCorrIndices = vectorsUnion(globalUnionCorrIndices, subUnion);
     }
 
-    std::vector<CorresStruct> globalUnionCorr;
+    std::vector<CorresStruct, Eigen::aligned_allocator<CorresStruct> > globalUnionCorr;
     globalUnionCorr.reserve(globalUnionCorrIndices.size());
     for (const int index: globalUnionCorrIndices) {
         globalUnionCorr.push_back(data_.corres[index]);
@@ -702,39 +784,44 @@ void MacRtHypothesis::findConsensusHypotheses() {
 
     // 这个循环计算量大，且每次迭代独立，非常适合并行化。
     float bestConsensusScore = -1.0f;
-    int bestConsensusIndex = -1;
     // bestConsensusHypothesis_ 在 clusterCenterHypotheses 中的索引
 #pragma omp parallel for
-    for (int clusterCenterIdx = 0; clusterCenterIdx < static_cast<int>(clusterCenterHypotheses.size()); ++clusterCenterIdx) {
+    for (int clusterCenterIdx = 0; clusterCenterIdx < static_cast<int>(clusterCenterHypotheses.size()); ++
+         clusterCenterIdx) {
         const auto &datasetConf = config_.getCurrentDatasetConfig();
         // 完善数据集阈值逻辑
         const float inlierEvaThresh = datasetConf.getActualInlierThreshold();
 
         const float clusterEvaScore = oamae(data_.cloudSrcKpts, data_.cloudTgtKpts,
-                                      clusterCenterHypotheses[clusterCenterIdx].transform_,
-                                      tgtSrcFromClusters, inlierEvaThresh);
+                                            clusterCenterHypotheses[clusterCenterIdx].transform_,
+                                            tgtSrcFromClusters, inlierEvaThresh);
 
         // 使用临界区保护对共享变量 bestConsensusScore 和 bestConsensusIndex 的写入
 #pragma omp critical
         {
             if (clusterEvaScore > bestConsensusScore) {
                 bestConsensusScore = clusterEvaScore;
-                bestConsensusIndex = clusterCenterIdx;
+                bestConsensusIndex_ = clusterCenterIdx;
             }
         }
     }
 
     // --- 步骤 4: 将最终找到的最佳共识假设存储到成员变量中 ---
-    if (bestConsensusIndex != -1) {
-        bestConsensusHypothesis_ = clusterCenterHypotheses[bestConsensusIndex];
+    if (bestConsensusIndex_ != -1) {
+        bestConsensusHypothesis_ = clusterCenterHypotheses[bestConsensusIndex_];
         bestConsensusHypothesis_.globalScore_ = bestConsensusScore;
-        LOG_INFO("Best consensus hypothesis found with refined OAMAE (cluster sampled pairs) score " << bestConsensusScore
-            << " from cluster " << clusterIndices[bestConsensusIndex] << " with hypothesis index " << bestConsensusHypothesis_.originalIndex_);
+        LOG_INFO(
+            "Best consensus hypothesis found with refined OAMAE (cluster sampled pairs) score " << bestConsensusScore
+            << " from cluster " << clusterIndices[bestConsensusIndex_] << " with hypothesis index " <<
+            bestConsensusHypothesis_.originalIndex_);
     } else {
         LOG_WARNING(
             "Could not determine a best consensus hypothesis via refined OAMAE. Using best individual as fallback.");
         bestConsensusHypothesis_ = bestIndividualHypothesis_;
     }
+    MON_SET_KV("hypo/best_consensus_score", bestConsensusScore);
+    MON_SET_KV("hypo/best_consensus_idx", bestConsensusIndex_);
+    MON_RECORD(); // close hypo/consensus/select
 }
 
 /**
@@ -742,6 +829,8 @@ void MacRtHypothesis::findConsensusHypotheses() {
  */
 void MacRtHypothesis::performFinalSelection() {
     LOG_INFO("--- 8. Performing final selection between individual and consensus ---");
+    // ---- [MON] hypo/final_selection ----
+    MON_ENTER("hypo/final_selection");
 
     // 使用 TCD (Truncated Chamfer Distance) 作为最终的评判标准
     // 准备用于 TCD 评估的点云 patch
@@ -756,9 +845,9 @@ void MacRtHypothesis::performFinalSelection() {
 
     // 计算两个候选者的分数
     individualScore_ = truncatedChamferDistance(patchSrc, patchTgt, bestIndividualHypothesis_.transform_,
-                                                           inlierEvaThresh);
+                                                inlierEvaThresh);
     consensusScore_ = truncatedChamferDistance(patchSrc, patchTgt, bestConsensusHypothesis_.transform_,
-                                                          inlierEvaThresh);
+                                               inlierEvaThresh);
 
     LOG_INFO("Finalist TCD Scores -> Individual: " << individualScore_ << ", Consensus: " << consensusScore_);
 
@@ -770,6 +859,10 @@ void MacRtHypothesis::performFinalSelection() {
         LOG_INFO("Winner: Best Consensus Hypothesis.");
         winningTransform_ = bestConsensusHypothesis_.transform_;
     }
+    MON_SET_KV("hypo/score_individual", individualScore_);
+    MON_SET_KV("hypo/score_consensus", consensusScore_);
+    MON_SET_KV("hypo/winner", std::string(individualScore_ > consensusScore_ ? "individual" : "consensus"));
+    MON_RECORD(); // close hypo/final_selection
 }
 
 /**
@@ -784,71 +877,94 @@ void MacRtHypothesis::refineBestTransform() {
     // 1. cluster_internal_evaluation 逻辑 (如果启用)
     // 注意：这是一个非常复杂的过程，它本身也应该被拆解成更小的辅助函数
     // 这里为了忠实于原始代码，暂时将其放在一起
-    int inlierCounter = 0;
-    PointCloudPtr clusterEvaCorrSrc(new pcl::PointCloud<pcl::PointXYZ>);
-    PointCloudPtr clusterEvaCorrDes(new pcl::PointCloud<pcl::PointXYZ>);
+    const PointCloudPtr clusterEvaCorrSrc(new pcl::PointCloud<pcl::PointXYZ>);
+    const PointCloudPtr clusterEvaCorrTgt(new pcl::PointCloud<pcl::PointXYZ>);
     // 临时解决方案
-    std::vector<Eigen::Matrix3f> Rs;
-    std::vector<Eigen::Vector3f> Ts;
+    std::vector<Eigen::Matrix3f, Eigen::aligned_allocator<Eigen::Matrix3f> > Rs;
+    std::vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f> > Ts;
     Rs.reserve(hypotheses_.size());
     Ts.reserve(hypotheses_.size());
     for (const auto &hypo: hypotheses_) {
-        Rs.push_back(hypo.transform_.topLeftCorner<3, 3>());
-        Ts.push_back(hypo.transform_.block<3, 1>(0, 3));
+        Rs.emplace_back(hypo.transform_.topLeftCorner<3, 3>());
+        Ts.emplace_back(hypo.transform_.block<3, 1>(0, 3));
     }
     // cluster_internal_evaluation
+    int bestClusterIndex = -1;
     if (config_.flagClusterInternalEvaluation) {
-        std::vector<CorresStruct> clusterEvaCorr;
+        int inlierCounter = 0;
+        std::vector<CorresStruct, Eigen::aligned_allocator<CorresStruct> > clusterEvaCorr;
         // if best similarity is small enough, indicating bestIndividualHypothesis_ is in the cluster
         if (bestSimilarity_ < 0.1) {
             LOG_INFO("bestEstIndividual is in a cluster, bestSimilarity: " << bestSimilarity_);
             // The individual is better than the cluster center estimate
             if (individualScore_ > consensusScore_) {
+                bestClusterIndex = bestSimClusterOriginalIndex_;
                 finalBestTransform_ = bestIndividualHypothesis_.transform_;
                 LOG_INFO("bestEstIndividual (global individual) is better");
             } else {
+                bestClusterIndex = bestConsensusIndex_;
                 finalBestTransform_ = bestConsensusHypothesis_.transform_;
                 LOG_INFO("bestEstConsensus (cluster center estimate) is better");
             }
             // Get the intersection of the sampled correspondences and the correspondences in the best cluster
             std::vector<int> finalSelectedCorresIndices;
-            std::vector<int> bestClusterIndices = clusters_[bestSimClusterOriginalIndex_].indices;
+            std::vector<int> bestClusterIndices = subClusterCorrIndices_[bestSimClusterOriginalIndex_];
+            std::sort(bestClusterIndices.begin(), bestClusterIndices.end());
+            std::sort(sampledCorresIndices_.begin(), sampledCorresIndices_.end());
+
             finalSelectedCorresIndices.assign(bestClusterIndices.begin(), bestClusterIndices.end());
             finalSelectedCorresIndices = vectorsIntersection(finalSelectedCorresIndices, sampledCorresIndices_);
+            // for (auto &ind: finalSelectedCorresIndices) {
+            //     std::cout << ind << " ";
+            // }
+            // std::cout << std::endl << std::endl << std::endl ;
+            // for (auto &ind: sampledCorresIndices_) {
+            //     std::cout << ind << " ";
+            // }
+            // std::cout << std::endl << std::endl << std::endl ;
+            // for (auto &ind: bestClusterIndices) {
+            //     std::cout << ind << " ";
+            // }
+            // std::cout << std::endl << std::endl << std::endl ;
+            // std::cout << bestSimClusterOriginalIndex_ << std::endl;
             // ---------------------------- Evaluation part ----------------------------
-            if (!finalSelectedCorresIndices.size()) {
+            if (finalSelectedCorresIndices.empty()) {
                 LOG_ERROR("No intersection correspondences found in the best cluster. Aborting refinement.");
                 return;
             }
-            inlierCounter = 0;
             for (const auto &ind: finalSelectedCorresIndices) {
                 clusterEvaCorr.push_back(data_.corres[ind]);
                 clusterEvaCorrSrc->push_back(data_.corres[ind].src);
-                clusterEvaCorrDes->push_back(data_.corres[ind].tgt);
+                clusterEvaCorrTgt->push_back(data_.corres[ind].tgt);
                 if (data_.gtInlierLabels[ind]) {
                     inlierCounter++;
                 }
             }
             std::cout << finalSelectedCorresIndices.size() << " intersection correspondences have " << inlierCounter <<
-                    " inliers: " << inlierCounter / (static_cast<int>(finalSelectedCorresIndices.size()) / 1.0) * 100 << "%" <<
+                    " inliers: " << inlierCounter / (static_cast<int>(finalSelectedCorresIndices.size()) / 1.0) * 100 <<
+                    "%" <<
                     std::endl;
             // -------------------------------------------------------------------------
             std::vector<std::pair<int, std::vector<int> > > tgtSrc3;
             makeTgtSrcPair(clusterEvaCorr, tgtSrc3);
 
-            finalBestTransform_ = clusterInternalTransEva1(clusters_, bestConsensusHypothesis_.originalIndex_, finalBestTransform_, Rs, Ts, data_.cloudSrcKpts, data_.cloudTgtKpts,
-                                               tgtSrc3, config_.threshold, data_.gtTransform, false, config_.outputPath);
-        } else { // bestEstIndividual is not in a cluster
+            finalBestTransform_ = clusterInternalTransEva1(clusters_, bestClusterIndex, finalBestTransform_, Rs, Ts,
+                                                           data_.cloudSrcKpts, data_.cloudTgtKpts,
+                                                           tgtSrc3, config_.threshold, data_.gtTransform, false,
+                                                           config_.outputPath);
+        } else {
+            // bestEstIndividual is not in a cluster
             LOG_INFO("bestEstIndividual is not in a cluster, bestSimilarity: " << bestSimilarity_);
             if (consensusScore_ > individualScore_) {
+                bestClusterIndex = bestConsensusIndex_;
                 // bestEstConsensusScore is better, then use this for final evaluation
                 finalBestTransform_ = bestIndividualHypothesis_.transform_;
                 LOG_INFO("bestEstConsensus is better");
                 std::vector<int> finalSelectedCorresIndices;
-                std::vector<int> bestClusterIndices = clusters_[bestSimClusterOriginalIndex_].indices;
+                std::vector<int> bestClusterIndices = subClusterCorrIndices_[bestSimClusterOriginalIndex_];
                 finalSelectedCorresIndices.assign(bestClusterIndices.begin(), bestClusterIndices.end());
                 finalSelectedCorresIndices = vectorsIntersection(finalSelectedCorresIndices, sampledCorresIndices_);
-                if (!finalSelectedCorresIndices.size()) {
+                if (finalSelectedCorresIndices.empty()) {
                     return;
                 }
                 inlierCounter = 0;
@@ -856,18 +972,22 @@ void MacRtHypothesis::refineBestTransform() {
                 for (const auto &ind: finalSelectedCorresIndices) {
                     clusterEvaCorr.push_back(data_.corres[ind]);
                     clusterEvaCorrSrc->push_back(data_.corres[ind].src);
-                    clusterEvaCorrDes->push_back(data_.corres[ind].tgt);
+                    clusterEvaCorrTgt->push_back(data_.corres[ind].tgt);
                     if (data_.gtInlierLabels[ind]) {
                         inlierCounter++;
                     }
                 }
                 std::cout << finalSelectedCorresIndices.size() << " intersection correspondences have " << inlierCounter
-                        << " inliers: " << inlierCounter / (static_cast<int>(finalSelectedCorresIndices.size()) / 1.0) * 100 <<
+                        << " inliers: " << inlierCounter / (static_cast<int>(finalSelectedCorresIndices.size()) / 1.0) *
+                        100 <<
                         "%" << std::endl;
                 std::vector<std::pair<int, std::vector<int> > > tgtSrc3;
                 makeTgtSrcPair(clusterEvaCorr, tgtSrc3);
-                finalBestTransform_ = clusterInternalTransEva1(clusters_,  bestIndividualHypothesis_.originalIndex_, finalBestTransform_, Rs, Ts, data_.cloudSrcKpts, data_.cloudTgtKpts,
-                                               tgtSrc3, config_.threshold, data_.gtTransform, false, config_.outputPath); } else {
+                finalBestTransform_ = clusterInternalTransEva1(clusters_, bestClusterIndex, finalBestTransform_, Rs, Ts,
+                                                               data_.cloudSrcKpts, data_.cloudTgtKpts,
+                                                               tgtSrc3, config_.threshold, data_.gtTransform, false,
+                                                               config_.outputPath);
+            } else {
                 finalBestTransform_ = bestIndividualHypothesis_.transform_;
                 LOG_INFO("bestEstIndividual is better but not in cluster! Refine it");
             }
@@ -880,7 +1000,6 @@ void MacRtHypothesis::refineBestTransform() {
     // postRefinement(finalBestTransform_, sampledCorr_);
 
 
-
     LOG_INFO("Refinement complete.");
 }
 
@@ -890,6 +1009,7 @@ void MacRtHypothesis::processGraphResultAndFindBest(const MacGraph &graph) {
     Timer timerProcessClique;
     timerProcessClique.startTiming("sample candidates");
     // 步骤 1: 候选采样
+    MON_ENTER("hypo/sample");
     sampleCandidates(graph);
     if (sampledCliqueIndices_.empty()) {
         LOG_ERROR("Clique sampling resulted in zero candidates. Aborting.");
@@ -897,24 +1017,32 @@ void MacRtHypothesis::processGraphResultAndFindBest(const MacGraph &graph) {
         return;
     }
     timerProcessClique.endTiming();
+    MON_RECORD();
 
+    // ---- [MON] hypo/prepare ----
+    MON_ENTER("hypo/prepare");
     timerProcessClique.startTiming("prepare sampled data");
     // 步骤 2: 准备采样数据
     prepareSampledData();
     timerProcessClique.endTiming();
+    MON_RECORD();
 
     LOG_INFO("Number of sampled correspondences: " << sampledCorresIndices_.size());
     LOG_INFO("Number of sampled cliques: " << sampledCliqueIndices_.size());
 
+    MON_ENTER("hypo/generate");
     timerProcessClique.startTiming("generate initial hypotheses");
     // 3. 生成假设
     generateHypotheses();
     timerProcessClique.endTiming();
+    MON_RECORD();
 
+    MON_ENTER("hypo/process_clique");
     timerProcessClique.startTiming("sort and filter hypotheses");
     // 4. 排序与过滤假设
     sortAndFilterHypotheses();
     timerProcessClique.endTiming();
+    MON_RECORD();
 
     // Later move the store logic out of the function sortAndFilterHypotheses
     // // --- 日志记录和最终结果赋值 (职责属于 Aligner) ---
@@ -943,41 +1071,59 @@ void MacRtHypothesis::processGraphResultAndFindBest(const MacGraph &graph) {
     // Cluster
 
     // --- 聚类与共识阶段 ---
+    MON_ENTER("hypo/cluster_and_consensus");
     timerProcessClique.startTiming("cluster");
     // 5.
     clusterHypotheses();
     timerProcessClique.endTiming();
+    MON_RECORD();
 
     if (clusters_.empty()) {
+        MON_ENTER("Basic MAC");
         handleClusteringFailure();
+        MON_RECORD();
         return; // 备用逻辑已处理完毕，直接返回
     }
 
     // 如果聚类成功，则继续
     // 6. 寻找最佳共识假设
+    MON_ENTER("hypo/cluster");
     timerProcessClique.startTiming("find consensus");
     selectBestConsensus();
     timerProcessClique.endTiming();
+    MON_RECORD();
 
 
     // 7. Find the best consensus hypothesis
+    MON_ENTER("hypo/findConsensus");
     timerProcessClique.startTiming("find Consensus Hypotheses");
     findConsensusHypotheses();
     timerProcessClique.endTiming();
+    MON_RECORD();
 
     if (bestIndividualHypothesis_.originalIndex_ == bestConsensusHypothesis_.originalIndex_) {
-        LOG_INFO("Best individual and best consensus hypotheses are the same: " << bestIndividualHypothesis_.originalIndex_
-                 << ".Skipping final selection."); // skip implementation is not done yet
-    }else {
+        LOG_INFO(
+            "Best individual and best consensus hypotheses are the same: " << bestIndividualHypothesis_.originalIndex_
+            << ".Skipping final selection."); // skip implementation is not done yet
+    } else {
         LOG_INFO("Best individual hypothesis index: " << bestIndividualHypothesis_.originalIndex_
-                 << ", Best consensus hypothesis index: " << bestConsensusHypothesis_.originalIndex_);
+            << ", Best consensus hypothesis index: " << bestConsensusHypothesis_.originalIndex_);
     }
 
-
     // 8. 在“最佳独立解”和“最佳共识解”之间进行最终选择
+    MON_ENTER("hypo/final_selection");
     timerProcessClique.startTiming("final selection");
     performFinalSelection();
     timerProcessClique.endTiming();
+    MON_RECORD();
+
+
+    // 9. 最终精炼
+    MON_ENTER("hypo/refineBestTransform");
+    timerProcessClique.startTiming("refineBestTransform");
+    refineBestTransform();
+    timerProcessClique.endTiming();
+    MON_RECORD();
 
     // ==============================================================================
     // ==         在这里添加您的打印代码，这是最佳位置         ==
@@ -985,7 +1131,6 @@ void MacRtHypothesis::processGraphResultAndFindBest(const MacGraph &graph) {
     LOG_INFO("================ Final Registration Result ================");
     std::cout << "Final Estimated Transformation Matrix:\n" << winningTransform_ << std::endl;
     // ==============================================================================
-
 }
 
 // TODO: This function is not optimized
@@ -1048,14 +1193,14 @@ void MacRtHypothesis::weightedSvd(const PointCloudPtr &srcPts, const PointCloudP
 
 
 float MacRtHypothesis::transScoreByLocalClique(const PointCloudPtr &srcCorrPts, const PointCloudPtr &tgtCorrPts,
-                                 const Eigen::Matrix4f &trans,
-                                 const float metricThresh, const std::string &metric) {
+                                               const Eigen::Matrix4f &trans,
+                                               const float metricThresh, const std::string &metric) {
     const PointCloudPtr srcTrans(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::transformPointCloud(*srcCorrPts, *srcTrans, trans);
     srcTrans->is_dense = false;
     std::vector<int> mapping;
     pcl::removeNaNFromPointCloud(*srcTrans, *srcTrans, mapping);
-    if (!srcTrans->size()) return 0;
+    if (srcTrans->empty()) return 0;
     float score = 0.0;
     const int corr_num = srcCorrPts->points.size();
     for (int i = 0; i < corr_num; i++) {

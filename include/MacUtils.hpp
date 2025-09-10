@@ -30,7 +30,7 @@ inline float getDistance(const pcl::PointXYZ &A, const pcl::PointXYZ &B);
 
 
 
-void makeTgtSrcPair(const std::vector<CorresStruct>& correspondence, std::vector<std::pair<int, std::vector<int>>>& tgtSrc);
+void makeTgtSrcPair(const std::vector<CorresStruct, Eigen::aligned_allocator<CorresStruct>>& correspondence, std::vector<std::pair<int, std::vector<int>>>& tgtSrc);
 
 
 
@@ -50,20 +50,20 @@ bool evaluationEst(Eigen::Matrix4f &est, Eigen::Matrix4f &gt, float reThresh, fl
 float rmseCompute(const PointCloudPtr& cloudSource, const PointCloudPtr& cloudTarget, Eigen::Matrix4f& matEst, Eigen::Matrix4f& matGt, float mr);
 
 // 后处理优化
-void postRefinement(std::vector<CorresStruct>&correspondence, PointCloudPtr& srcCorrPts, PointCloudPtr& desCorrPts, Eigen::Matrix4f& initial, float& bestScore, float inlierThresh, int iterations, const std::string &metric);
+void postRefinement(std::vector<CorresStruct, Eigen::aligned_allocator<CorresStruct>>&correspondence, PointCloudPtr& srcCorrPts, PointCloudPtr& desCorrPts, Eigen::Matrix4f& initial, float& bestScore, float inlierThresh, int iterations, const std::string &metric);
 
 // 向量操作函数
 std::vector<int> vectorsUnion(const std::vector<int>& v1, const std::vector<int>& v2);
 std::vector<int> vectorsIntersection(const std::vector<int>& v1, const std::vector<int>& v2);
 
 // 点云处理函数
-void getCorrPatch(std::vector<CorresStruct>&sampledCorr, PointCloudPtr &src, PointCloudPtr &tgt, PointCloudPtr &patchSrc, PointCloudPtr &patchTgt, float radius);
+void getCorrPatch(std::vector<CorresStruct, Eigen::aligned_allocator<CorresStruct>>&sampledCorr, PointCloudPtr &src, PointCloudPtr &tgt, PointCloudPtr &patchSrc, PointCloudPtr &patchTgt, float radius);
 float truncatedChamferDistance(PointCloudPtr& src, PointCloudPtr& des, Eigen::Matrix4f &est, float thresh);
 float oamae1ToK(PointCloudPtr& rawSrc, PointCloudPtr& rawDes, Eigen::Matrix4f &est, std::vector<std::pair<int, std::vector<int>>> &srcDes, float thresh);
 
 // 聚类内部变换评估
-Eigen::Matrix4f clusterInternalTransEva(pcl::IndicesClusters &clusterTrans, int bestIndex, Eigen::Matrix4f &initial, std::vector<Eigen::Matrix3f> &Rs, std::vector<Eigen::Vector3f> &Ts, PointCloudPtr& srcKpts, PointCloudPtr& desKpts, std::vector<std::pair<int, std::vector<int>>> &desSrc, float thresh, Eigen::Matrix4f& gtMat, std::string folderPath);
-Eigen::Matrix4f clusterInternalTransEva1(const pcl::IndicesClusters &clusterTrans, int bestIndex, Eigen::Matrix4f &initial, std::vector<Eigen::Matrix3f> &Rs, const std::vector<Eigen::Vector3f> &Ts, PointCloudPtr& srcKpts, PointCloudPtr& desKpts, std::vector<std::pair<int, std::vector<int>>> &desSrc, float thresh, Eigen::Matrix4f& gtMat, bool oneToK, std::string folderPath);
+Eigen::Matrix4f clusterInternalTransEva(pcl::IndicesClusters &clusterTrans, int bestIndex, Eigen::Matrix4f &initial, std::vector<Eigen::Matrix3f, Eigen::aligned_allocator<Eigen::Matrix3f>> &Rs, std::vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f>> &Ts, PointCloudPtr& srcKpts, PointCloudPtr& desKpts, std::vector<std::pair<int, std::vector<int>>> &desSrc, float thresh, Eigen::Matrix4f& gtMat, std::string folderPath);
+Eigen::Matrix4f clusterInternalTransEva1(const pcl::IndicesClusters &clusterTrans, int bestIndex, Eigen::Matrix4f &initial, std::vector<Eigen::Matrix3f, Eigen::aligned_allocator<Eigen::Matrix3f>> &Rs, const std::vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f>> &Ts, PointCloudPtr& srcKpts, PointCloudPtr& desKpts, std::vector<std::pair<int, std::vector<int>>> &desSrc, float thresh, Eigen::Matrix4f& gtMat, bool oneToK, std::string folderPath);
 
 
 #endif // MAC_UTILS_

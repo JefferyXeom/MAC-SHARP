@@ -17,7 +17,7 @@ class MacData {
      * @brief 为对应关系查找在关键点云中的索引
      */
     static void findIndexForCorrespondences(PointCloudPtr& cloudSrcKpts, PointCloudPtr& cloudTgtKpts,
-                                              std::vector<CorresStruct>& corres, std::ofstream& corresIndexFileOut);
+                                              std::vector<CorresStruct, Eigen::aligned_allocator<CorresStruct>>& corres, std::ofstream& corresIndexFileOut);
 
     /**
      * @brief 计算点云的分辨率
@@ -30,7 +30,7 @@ class MacData {
     template<typename PointT>
     static bool loadPointCloud(const std::string &filePath, pcl::PointCloud<PointT> &cloud);
 
-    static void makeTgtSrcPair(const std::vector<CorresStruct> &correspondence,
+    static void makeTgtSrcPair(const std::vector<CorresStruct, Eigen::aligned_allocator<CorresStruct>> &correspondence,
                                std::vector<std::pair<int, std::vector<int> > > &tgtSrc);
 
 public:
@@ -41,7 +41,7 @@ public:
     // then originalCorr is the same with cloudKpts.
     PointCloudPtr cloudSrcKpts; // Keypoints clouds, considered as unordered
     PointCloudPtr cloudTgtKpts;
-    std::vector<CorresStruct> corres;
+    std::vector<CorresStruct, Eigen::aligned_allocator<CorresStruct>> corres;
 
     // Ground Truth (for evaluation)
     Eigen::Matrix4f gtTransform;
@@ -75,8 +75,8 @@ public:
     bool loadData(const MacConfig &config);
 
     // geters
-    const PointCloudPtr& getSrcCorrPts() const { return originalCorrSrc; }
-    const PointCloudPtr& getTgtCorrPts() const { return originalCorrTgt; }
+    [[nodiscard]] const PointCloudPtr& getSrcCorrPts() const { return originalCorrSrc; }
+    [[nodiscard]] const PointCloudPtr& getTgtCorrPts() const { return originalCorrTgt; }
 
 };
 
@@ -97,7 +97,14 @@ typedef struct MacResult {
     int correctEstNum;                  // 算法估计对应关系中的正确对应关系数量
     int gtInlierNum;                    // Ground Truth中的内点数量
     float timeEpoch;                   // 算法执行时间，单位：秒
-    std::vector<float> predicatedInlier; // 预测内点比率向量，包含精确率、召回率、F1分数等
+    std::vector<float> predictedInlier; // 预测内点比率向量，包含精确率、召回率、F1分数等
+    bool evalPass{};
+    float reThreshDegUsed{};
+    float teThreshMUsed{};
+    float inlierThreshMUsed{};
+    int inlierPredictedCount{};
+    int inlierCorrectCount{};
+    int inlierGtTotalCount{};
 
     /**
      * @brief 默认构造函数
@@ -105,7 +112,7 @@ typedef struct MacResult {
      * 初始化所有数值成员为0，向量为空
      */
     MacResult() : RE(0.0), TE(0.0), correctEstNum(0), gtInlierNum(0), timeEpoch(0.0) {
-        predicatedInlier.clear();
+        predictedInlier.clear();
     }
 
     /**
@@ -119,6 +126,6 @@ typedef struct MacResult {
         correctEstNum = 0;
         gtInlierNum = 0;
         timeEpoch = 0.0;
-        predicatedInlier.clear();
+        predictedInlier.clear();
     }
 } MacResult;

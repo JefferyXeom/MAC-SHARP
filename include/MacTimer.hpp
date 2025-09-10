@@ -13,7 +13,6 @@
 #include <chrono>
 #include <vector>
 
-#include "MacTimer.hpp"
 #include "CommonTypes.hpp" // For logging macros
 
 
@@ -76,5 +75,11 @@ public:
 
     [[nodiscard]] bool getIsRunning() const {
         return isRunning;
+    }
+
+    [[nodiscard]] double getTotalElapsedTime() const {
+        double total = 0.0;
+        for (const double s : elapsedTimes) total += s;
+        return total;
     }
 };

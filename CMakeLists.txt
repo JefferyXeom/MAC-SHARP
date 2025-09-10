@@ -96,6 +96,9 @@ set(SOURCES
         src/MacData.cpp
         src/MacGraph.cpp
         src/MacRtHypothesis.cpp
+        src/MacMonitor.cpp
+        src/MacEvaluator.cpp
+        include/MacEvaluator.hpp
         #    src/other_file2.cpp
 )
 # Define header files

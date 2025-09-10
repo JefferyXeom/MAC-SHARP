@@ -30,19 +30,20 @@ class MacRtHypothesis {
     // --- 采样后的数据，作为后续步骤共享的资源 ---
     std::vector<int> sampledCorresIndices_;
     std::vector<int> sampledCliqueIndices_;
-    std::vector<CorresStruct> sampledCorr_;
+    std::vector<CorresStruct, Eigen::aligned_allocator<CorresStruct>> sampledCorr_;
     PointCloudPtr sampledCorrSrc_;
     PointCloudPtr sampledCorrTgt_;
 
     // Sorted by clique score, decremental
     // Alraedy sampled and filtered before clustering
-    std::vector<TransformHypothesis> hypotheses_;
+    std::vector<TransformHypothesis, Eigen::aligned_allocator<TransformHypothesis>> hypotheses_;
 
     // Best individual
     TransformHypothesis bestIndividualHypothesis_;
     float bestSimilarity_ = std::numeric_limits<float>::max();
     int bestSimClusterOriginalIndex_ = -1; // 聚类在 clusters_ 中的原始索引
     int bestSimHypoInClusterIndex_ = -1; // 假设在聚类内部的索引
+    int bestConsensusIndex_ = -1;
     // get hypoIdx by clusters_[bestSimClusterOriginalIndex_].indices[bestSimHypoInClusterIndex_]
     // also, the index can be accessed in TransformHypothesis struct
     float individualScore_ = -1.0f;
@@ -62,10 +63,13 @@ class MacRtHypothesis {
     std::vector<ClusterStruct> sortedClusters_;     // 存储按大小排序后的聚类信息
     // sortedClusters_ only keep the cluster index and cluster size
 
+    std::vector<std::vector<int> > subClusterCorrIndices_;
 
     Eigen::Matrix4f winningTransform_;          // 存储在精炼之前的“胜出”变换
     Eigen::Matrix4f finalBestTransform_;        // 存储精炼后的最终结果
 
+    // 临时为handleClusteringFailure设计的变量
+    bool flagFound_ = false;
 
     // --- 内部核心流程 ---
     void sampleCandidates(const MacGraph &graph);
@@ -83,7 +87,7 @@ static bool EnforceSimilarity1(const pcl::PointXYZINormal &pointA, const pcl::Po
 static bool checkEulerAngles(const float angle) {
         return std::isfinite(angle) && angle >= -M_PIf32 && angle <= M_PIf32;
     }
-static int clusterTransformationByRotation(const std::vector<Eigen::Matrix3f> &Rs, const std::vector<Eigen::Vector3f> &Ts, float angleThresh, float disThresh, pcl::IndicesClusters &clusters, pcl::PointCloud<pcl::PointXYZINormal>::Ptr &trans);
+static int clusterTransformationByRotation(const std::vector<Eigen::Matrix3f, Eigen::aligned_allocator<Eigen::Matrix3f>> &Rs, const std::vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f>> &Ts, float angleThresh, float disThresh, pcl::IndicesClusters &clusters, pcl::PointCloud<pcl::PointXYZINormal>::Ptr &trans);
 
     void clusterHypotheses();
 
@@ -107,7 +111,7 @@ static int clusterTransformationByRotation(const std::vector<Eigen::Matrix3f> &R
 
 static void weightedSvd(const PointCloudPtr& srcPts, const PointCloudPtr& tgtPts, Eigen::VectorXf &weights, float weightThreshold, Eigen::Matrix4f& transMat);
     static float transScoreByLocalClique(const PointCloudPtr& srcCorrPts, const PointCloudPtr& tgtCorrPts, const Eigen::Matrix4f& trans, float metricThresh, const std::string &metric) ;
-    //     void postRefinement(Eigen::Matrix4f& transform, const std::vector<CorresStruct>& corrs) const;
+    //     void postRefinement(Eigen::Matrix4f& transform, const std::vector<CorresStruct, Eigen::aligned_allocater<CorresStruct>>& corrs) const;
 //     float truncatedChamferDistance(const PointCloudPtr& src, const PointCloudPtr& tgt, const Eigen::Matrix4f& est) const;
 
 public:
@@ -128,9 +132,9 @@ public:
 
 
     // Getter
-    const std::vector<TransformHypothesis> &getFinalHypotheses() const { return hypotheses_; }
-    int getNumCorrectHypotheses() const { return numCorrectHypotheses_; }
-    Eigen::Matrix4f getBestTransform() const { return finalBestTransform_; }
-    const std::vector<TransformHypothesis>& getHypotheses() const { return hypotheses_; }
+    [[nodiscard]] const std::vector<TransformHypothesis, Eigen::aligned_allocator<TransformHypothesis>> &getFinalHypotheses() const { return hypotheses_; }
+    [[nodiscard]] int getNumCorrectHypotheses() const { return numCorrectHypotheses_; }
+    [[nodiscard]] Eigen::Matrix4f getBestTransform() const { return finalBestTransform_; }
+    [[nodiscard]] const std::vector<TransformHypothesis, Eigen::aligned_allocator<TransformHypothesis>>& getHypotheses() const { return hypotheses_; }
 
 };

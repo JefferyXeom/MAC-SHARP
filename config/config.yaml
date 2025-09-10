@@ -1,159 +1,165 @@
-# inputs and outputs
-# [INFO] All keys are unified to lowerCamelCase style to match C++ variables.
-# indicates the evaluation parameters
-currentDataset: "3DMatch" # Options: "3DMatch", "3DLoMatch", "KITTI", "U3M", "ETH"
+# ===================================================================
+# ==                 1. 执行配置 (Execution)                       ==
+# ===================================================================
+# 控制程序如何运行，处理哪些数据
+execution:
+  # 在此指定本次运行要评估的数据集名称，仅用于指示和评估
+  datasetToRun: "3DMatch"
 
-descriptor: "FPFH"
-cloudSrcPath: "../test_data/src.ply"
-cloudTgtPath: "../test_data/tgt.ply"
-cloudSrcKptPath: "../test_data/src_kpts.pcd"
-cloudTgtKptPath: "../test_data/tgt_kpts.pcd"
-corresPath: "../test_data/corr.txt"
-corresIndexPath: "../test_data/corr_ind.txt"
-gtLabelPath: "../test_data/label.txt"
-gtTfPath: "../test_data/GTmat.txt"
-#outputPath: "../test_data/output"
-outputPath: "../test_data/output2"
+  # 所有文件路径都集中在这里
+  paths:
+    cloudSrc: "../test_data/src.ply"
+    cloudTgt: "../test_data/tgt.ply"
+    cloudSrcKpt: "../test_data/src_kpts.pcd"
+    cloudTgtKpt: "../test_data/tgt_kpts.pcd"
+    correspondences: "../test_data/corr.txt"
+    corresIndex: "../test_data/corr_ind.txt"
+#    output: "../test_data/output"
+    output: "../test_data/output2"
 
-LidarParameters:
-  # Below are not used
-  maxRange: 80.0          # in meters
-  minRange: 0.0           # in meters
-  verticalFOV: 30.0       # in degrees
-  horizontalFOV: 360.0    # in degrees
-  verticalRes: 0.4        # in degrees
-  horizontalRes: 0.35     # in degrees
-  numScanLines: 64        # number of scan lines, e.g., 16, 32, 64
-  # Below are used
-  varianceMode: "FIXED" # Options: "FIXED", "DYNAMIC"
-  sigmaRho: 0.01        # in meters
-  sigmaTheta: 0.05      # in degrees
-  sigmaPhi: 0.05        # in degrees
-  NSigma: 1.0           # n sigma for outlier rejection
+  # 系统控制
+  system:
+    desiredThreads: -1
+    logLevel: "DEBUG" # DEBUG, INFO, WARNING, ERROR, CRITICAL
+    noLogFile: false  # if true, the program will not produce the log file
 
-flags:
-  # [INFO] Flag keys are unified to lowerCamelCase.
-  lowInlierRatio: false
-  addOverlap: false
-  noLogs: true
-  secondOrderGraph: false
-  useIcp: false
-  instanceEqual: true
-  clusterInternalEvaluation: true
-  useTopK: false
-  verbose: true
+  # 未使用，仍在开发中
+  inDevelopment:
+    lowInlierRatio: false # Not used
+    addOverlap: false     # Not used
+    useTopK: false        # Not used
 
-globalVariables:
-  # [INFO] Global variable keys are unified to lowerCamelCase.
-  maxEstimateNum: 2147483647  # INT_MAX
-  metric: "MAE"
-  scoreFormula: "GAUSSIAN_KERNEL" # GAUSSIAN_KERNEL, QUADRATIC_FALLOFF
-  desiredThreads: -1
-  totalIterations: 1 # Number of iterations for registration
-  # Maximal clique search parameters
-  maxTotalCliqueNum: 10000000
-  maxCliqueIterations: 5
-  maxCliqueSize: 15 # Should not be less than 3 + maxCliqueIterations
-  # Clique filtering parameters
-  maxLocalCliqueNum: 11 # 因为逻辑不一样，源码里面写得是>10，我们这里写的是==maxLocalCliqueNum
+# ===================================================================
+# ==                 2. 核心算法配置 (Algorithm)                   ==
+# ===================================================================
+# 这些参数直接影响算法的行为，且与任何特定数据集无关
+algorithm:
 
-systemControls:
-  verbose: true # Not used. Obviously, we hope at least the error messages are printed, though generally they are not print if there is no error.
-  logLevel: "DEBUG" # 0=DEBUG, 1=INFO, 2=WARNING, 3=CRITICAL, 4=ERROR
-  saveLogs: true # Not implemented yet
-  saveResults: true # Not implemented yet
+  lidarNoiseModel:
+    # Below are not used
+    maxRange: 80.0          # in meters
+    minRange: 0.0           # in meters
+    verticalFOV: 30.0       # in degrees
+    horizontalFOV: 360.0    # in degrees
+    verticalRes: 0.4        # in degrees
+    horizontalRes: 0.35     # in degrees
+    numScanLines: 64        # number of scan lines, e.g., 16, 32, 64
+    # Below are used
+    varianceMode: "FIXED" # Options: "FIXED", "DYNAMIC"
+    # Velodyne HDL 64 Lidar
+    sigmaRho: 0.05          # in meters
+    sigmaTheta: 0.2304      # in degrees (zenith)
+    sigmaPhi: 0.09          # in degrees (azimuth)
+    NSigma: 1               # n sigma for outlier rejection
 
+  # 图构建参数
+  graph:
+    scoreFormula: "GAUSSIAN_KERNEL" # GAUSSIAN_KERNEL or QUADRATIC_FALLOFF
+    secondOrderGraph: false
 
-# 数据集特定配置
-# Only for evaluations
-datasetConfigs:
-  # 3DMatch数据集配置
-  # 从代码中提取：REEvaThresh = 15, TEEvaThresh = 30, inlierEvaThresh = 0.1
-  threeDMatch:
-    rotationErrorThreshold: 15.0      # 旋转误差阈值，单位：度
-    translationErrorThreshold: 30.0   # 平移误差阈值，单位：厘米
-    inlierEvaluationThreshold: 0.1    # 内点评估阈值，单位：米
-    clusteringAngleThreshold: 5.0     # 聚类角度阈值，单位：度（转换为弧度时 * PI/180）
-    clusteringDistanceThreshold: 0.1  # 聚类距离阈值，与inlierEvaThresh相同
-    successRMSEThreshold: 0.2         # 成功配准的RMSE阈值
+  clique:
+    # Maximal clique search parameters
+    maxTotalNum: 10000000
+    maxIterations: 5
+    maxSize: 15 # Should not be less than 3 + maxIterations
+    # Clique filtering parameters
+    maxLocalNum: 11 # 因为逻辑不一样，源码里面写的是>maxLocalNum，我们这里写的是==maxLocalNum
 
-  # 3DLoMatch数据集配置
-  # 从代码中提取：与3DMatch相同的参数配置
-  threeDlomatch:
-    rotationErrorThreshold: 15.0      # 旋转误差阈值，单位：度
-    translationErrorThreshold: 30.0   # 平移误差阈值，单位：厘米
-    inlierEvaluationThreshold: 0.1    # 内点评估阈值，单位：米
-    clusteringAngleThreshold: 5.0     # 聚类角度阈值，单位：度
-    clusteringDistanceThreshold: 0.1  # 聚类距离阈值
-    successRMSEThreshold: 0.2         # 成功配准的RMSE阈值
+  hypothesis:
+    maxEstimateNum: 2147483647  # INT_MAX
+    instanceEqual: true
+    localEvaluationMetric: "MAE"
 
-  # KITTI数据集配置
-  # 从代码中提取：REEvaThresh = 5, TEEvaThresh = 180, inlierEvaThresh = 1.8
-  KITTI:
-    rotationErrorThreshold: 5.0       # 旋转误差阈值，单位：度
-    translationErrorThreshold: 180.0  # 平移误差阈值，单位：厘米
-    inlierEvaluationThreshold: 1.8    # 内点评估阈值，单位：米
-    clusteringAngleThreshold: 3.0     # 聚类角度阈值，单位：度
-    clusteringDistanceThreshold: 1.8  # 聚类距离阈值，与inlierEvaThresh相同
-    successRMSEThreshold: 0.2         # 成功配准的RMSE阈值
+  # 精炼与最终决策参数
+  refinement:
+    useIcp: false
+    clusterInternalEvaluation: true
 
-  # U3M数据集配置
-  # 从代码中提取：特殊处理，使用cloudResolution相关的阈值
-  U3M:
-    rotationErrorThreshold: 5.0       # 成功阈值，RE <= 5
-    translationErrorThreshold: 0.0    # U3M数据集TE设为0
-    inlierEvaluationThresholdMultiplier: 5.0  # inlierEvaThresh = 5 * cloudResolution
-    clusteringAngleThreshold: 3.0     # 聚类角度阈值，单位：度
-    clusteringDistanceThresholdMultiplier: 5.0  # disThresh = 5 * cloudResolution
-    successRMSEThreshold: 5.0         # 成功配准的RMSE阈值（与RE阈值相同）
+# ===================================================================
+# ==                 3. 监控与日志 (Monitor)                       ==
+# ===================================================================
+monitor:
+  enabled: true         # 关闭后：所有 enter/record/CSV/tee/树状摘要均不执行
 
-  # ETH数据集配置（如果需要的话，可以参考其他数据集的默认值）
-  ETH:
-    rotationErrorThreshold: 15.0      # 默认使用与3DMatch相同的配置
-    translationErrorThreshold: 30.0
-    inlierEvaluationThreshold: 0.1
-    clusteringAngleThreshold: 5.0
-    clusteringDistanceThreshold: 0.1
-    successRMSEThreshold: 0.2
+  # 粒度：只记关键阶段，还是全量细节
+  granularity: "ALL"   # 可选: "CORE" | "ALL"    [默认 CORE]
 
-# Scenes in each dataset
-datasets:
-  threeDMatch:
-    - 7-scenes-redkitchen
-    - sun3d-home_at-home_at_scan1_2013_jan_1
-    - sun3d-home_md-home_md_scan9_2012_sep_30
-    - sun3d-hotel_uc-scan3
-    - sun3d-hotel_umd-maryland_hotel1
-    - sun3d-hotel_umd-maryland_hotel3
-    - sun3d-mit_76_studyroom-76-1studyroom2
-    - sun3d-mit_lab_hj-lab_hj_tea_nov_2_2012_scan1_erika
+  # 阶段指标（写入 CSV 的 note 字段）
+  metrics: "AUTO"       # 可选: "OFF" | "AUTO" | "ALL"
+    # - OFF  : 不写任何指标（仅时间/内存）
+    # - AUTO : evaluation.enabled==true 时写指标；否则不写
+    # - ALL  : 无视 evaluation.enabled，所有阶段都写指标
+  #   （你现在的需求建议用 AUTO）
 
-  threeDlomatch:
-    - 7-scenes-redkitchen_3dlomatch
-    - sun3d-home_at-home_at_scan1_2013_jan_1_3dlomatch
-    - sun3d-home_md-home_md_scan9_2012_sep_30_3dlomatch
-    - sun3d-hotel_uc-scan3_3dlomatch
-    - sun3d-hotel_umd-maryland_hotel1_3dlomatch
-    - sun3d-hotel_umd-maryland_hotel3_3dlomatch
-    - sun3d-mit_76_studyroom-76-1studyroom2_3dlomatch
-    - sun3d-mit_lab_hj-lab_hj_tea_nov_2_2012_scan1_erika_3dlomatch
+  # 仅在 granularity=CORE 时生效：层级阈值
+  coreDepth: 2          # 取“栈深≤2”的阶段作为关键阶段（可按需要调到1/3）
 
-  ETH:
-    - gazebo_summer
-    - gazebo_winter
-    - wood_autmn
-    - wood_summer
+  # 命令行树状摘要（Time Tree）
+  timeTree:
+    enabled: true
+    charset: "ascii"  # 可选: "unicode" | "ascii"
+    showMemory: true
+    showNotes: true     # 是否在每行尾部截断展示少量 note（metrics）
+    maxDepth: -1        # -1 表示不限制
 
-  # 添加KITTI和U3M数据集的场景列表（如果有的话）
-  KITTI:
-    - sequence_00
-    - sequence_01
-    - sequence_02
-    # 可根据实际KITTI数据集场景添加更多
+  summary:
+    enabled: true   # 控制是否在启动时打印配置摘要
 
-  U3M:
-    - scene_01
-    - scene_02
-    - scene_03
-    # 可根据实际U3M数据集场景添加更多
+# ===================================================================
+# ==                 4. 评估专用配置 (Evaluation)                  ==
+# ===================================================================
+# 所有仅用于评估和对比真值的参数都在这里
+evaluation:
+  # 真值文件路径 (GT)
+  paths:
+    groundTruthLabels: "../test_data/label.txt"
+    groundTruthTransform: "../test_data/GTmat.txt"
 
+  # 各个数据集的评估阈值
+  datasets:
+    "3DMatch":
+      rotationErrorThreshold: 15.0        # 旋转误差阈值，单位：度
+      translationErrorThreshold: 0.30     # 平移误差阈值，单位：米
+      inlierThreshold: 0.1                # 内点评估阈值，单位：米
+      clusteringAngleThreshold: 5.0       # 聚类角度阈值，单位：度（转换为弧度时 * PI/180）
+      clusteringDistanceThreshold: 0.1    # 聚类距离阈值，与inlierEvaThresh相同、
+      successRMSEThreshold: 0.2           # 成功配准的RMSE阈值
+      # 可选：为该数据集预计算的分辨率，以加速批量处理
+      # 如果注释掉或设为0，程序会自动计算
+      meshResolution: 0.00605396          # 点云分辨率，单位：米
+
+    "3DLoMatch":
+      rotationErrorThreshold: 15.0
+      translationErrorThreshold: 0.30
+      inlierThreshold: 0.1
+      clusteringAngleThreshold: 5.0
+      clusteringDistanceThreshold: 0.1
+      successRMSEThreshold: 0.2
+      meshResolution: 0.00605396
+
+    "KITTI":
+      rotationErrorThreshold: 5.0
+      translationErrorThreshold: 1.80
+      inlierThreshold: 1.8
+      clusteringAngleThreshold: 3.0
+      clusteringDistanceThreshold: 1.8
+      successRMSEThreshold: 0.2
+      meshResolution: 0.09 # 示例值
+
+    "U3M":
+      # U3M的阈值是基于分辨率的乘数，而不是固定值
+      # 上述这一点待定
+      rotationErrorThreshold: 5.0
+      translationErrorThreshold: 0.0
+      inlierThresholdMultiplier: 5.0
+      clusteringAngleThreshold: 3.0
+      clusteringDistanceThresholdMultiplier: 5.0
+      successRMSEThreshold: 0.2
+
+    "ETH":
+      rotationErrorThreshold: 15.0
+      translationErrorThreshold: 30.0
+      inlierThreshold: 0.1
+      clusteringAngleThreshold: 5.0
+      clusteringDistanceThreshold: 0.1
+      successRMSEThreshold: 0.2

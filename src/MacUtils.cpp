@@ -129,22 +129,21 @@ float oamae(const PointCloudPtr &src, const PointCloudPtr &tgt, const Eigen::Mat
 
 float calculateRotationError(Eigen::Matrix3f &est, const Eigen::Matrix3f &gt) {
     const float tr = (est.transpose() * gt).trace();
-    return acos(std::min(std::max((tr - 1.0) / 2.0, -1.0), 1.0)) * 180.0 / M_PI;
+    return acos(std::min(std::max((tr - 1.0) / 2.0, -1.0), 1.0)) * 180.0 / M_PI; // degree
 }
 
 float calculateTranslationError(const Eigen::Vector3f &est, const Eigen::Vector3f &gt) {
     const Eigen::Vector3f t = est - gt;
-    return sqrt(t.dot(t)) * 100;
+    return sqrt(t.dot(t));
 }
 
-
+// 这个函数的很多评估阈值还是写死的，请注意！！！!!!
 bool evaluationEst(Eigen::Matrix4f &est, Eigen::Matrix4f &gt, float reThresh, float teThresh, float &RE,
                    float &TE) {
     Eigen::Matrix3f rotation_est = est.topLeftCorner(3, 3);
     Eigen::Matrix3f rotation_gt = gt.topLeftCorner(3, 3);
     Eigen::Vector3f translation_est = est.block(0, 3, 3, 1);
     Eigen::Vector3f translation_gt = gt.block(0, 3, 3, 1);
-
     RE = calculateRotationError(rotation_est, rotation_gt);
     TE = calculateTranslationError(translation_est, translation_gt);
     if (0 <= RE && RE <= reThresh && 0 <= TE && TE <= teThresh) {
@@ -202,7 +201,7 @@ float rmseCompute(const PointCloudPtr &cloud_source, const PointCloudPtr &cloud_
 // but a target may have many sources. This function is used to find target source pair, where target paired with various sources.
 // Only happen if we use one way matching method
 ///////////////////////////////// temporary added here!!!
-void makeTgtSrcPair(const std::vector<CorresStruct> &correspondence,
+void makeTgtSrcPair(const std::vector<CorresStruct, Eigen::aligned_allocator<CorresStruct>> &correspondence,
                        std::vector<std::pair<int, std::vector<int> > > &tgtSrc) {
     //需要读取保存的kpts, 匹配数据按照索引形式保存
     assert(correspondence.size() > 1); // 保留一个就行
@@ -210,7 +209,7 @@ void makeTgtSrcPair(const std::vector<CorresStruct> &correspondence,
         std::cout << "The correspondence vector is empty." << std::endl;
     }
     tgtSrc.clear();
-    std::vector<CorresStruct> corr;
+    std::vector<CorresStruct, Eigen::aligned_allocator<CorresStruct>> corr;
     corr.assign(correspondence.begin(), correspondence.end());
     std::sort(corr.begin(), corr.end(), compareCorresTgtIndex); // sort by target index increasing order
     int tgt = corr[0].tgtIndex;
@@ -289,7 +288,7 @@ void weightSvd(PointCloudPtr &srcPts, PointCloudPtr &tgtPts, Eigen::VectorXf &we
 }
 
 // TODO 还差这一步以及ICP！！！！！！！！！!!!!!!!!!!!!!!!!!
-void postRefinement(std::vector<CorresStruct> &correspondence, PointCloudPtr &src_corr_pts,
+void postRefinement(std::vector<CorresStruct, Eigen::aligned_allocator<CorresStruct>> &correspondence, PointCloudPtr &src_corr_pts,
                     PointCloudPtr &des_corr_pts, Eigen::Matrix4f &initial/* 由最大团生成的变换 */, float &best_score,
                     float inlier_thresh, int iterations, const std::string &metric) {
     int pointNum = src_corr_pts->points.size();
@@ -386,7 +385,7 @@ std::vector<int> vectorsUnion(const std::vector<int>& v1, const std::vector<int>
     return result;
 }
 
-void getCorrPatch(std::vector<CorresStruct> &sampledCorr, PointCloudPtr &src, PointCloudPtr &tgt,
+void getCorrPatch(std::vector<CorresStruct, Eigen::aligned_allocator<CorresStruct>> &sampledCorr, PointCloudPtr &src, PointCloudPtr &tgt,
                   PointCloudPtr &patchSrc, PointCloudPtr &patchTgt, float radius) {
     pcl::KdTreeFLANN<pcl::PointXYZ> kdtreeSrc, kdtreeTgt;
     kdtreeSrc.setInputCloud(src);
@@ -394,9 +393,9 @@ void getCorrPatch(std::vector<CorresStruct> &sampledCorr, PointCloudPtr &src, Po
     std::vector<int> srcInd, tgtInd;
     std::vector<float> srcDis, tgtDis;
     std::vector<int> patchSrcIndices, patchTgtIndices;
-    for (int i = 0; i < sampledCorr.size(); i++) {
-        kdtreeSrc.radiusSearch(sampledCorr[i].srcIndex, radius, srcInd, srcDis);
-        kdtreeTgt.radiusSearch(sampledCorr[i].tgtIndex, radius, tgtInd, tgtDis);
+    for (auto & i : sampledCorr) {
+        kdtreeSrc.radiusSearch(i.srcIndex, radius, srcInd, srcDis);
+        kdtreeTgt.radiusSearch(i.tgtIndex, radius, tgtInd, tgtDis);
         sort(srcInd.begin(), srcInd.end());
         sort(tgtInd.begin(), tgtInd.end());
         patchSrcIndices = vectorsUnion(srcInd, patchSrcIndices);
@@ -446,10 +445,51 @@ float truncatedChamferDistance(PointCloudPtr &src, PointCloudPtr &des, Eigen::Ma
     return (score1 + score2) / 2;
 }
 
-std::vector<int> vectorsIntersection(const std::vector<int> &v1, const std::vector<int> &v2) {
-    std::vector<int> v;
-    set_intersection(v1.begin(), v1.end(), v2.begin(), v2.end(), back_inserter(v));
-    return v;
+// std::vector<int> vectorsIntersection(const std::vector<int> &v1, const std::vector<int> &v2) {
+//     std::vector<int> v;
+//     set_intersection(v1.begin(), v1.end(), v2.begin(), v2.end(), back_inserter(v));
+//     return v;
+// }
+
+/**
+ * @brief Calculate the intersection of two unsorted vector<int>.
+ * @param v1 The first vector.
+ * @param v2 The second vector.
+ * @return A sorted vector containing the intersection of v1 and v2 (elements that are in both vectors).
+ */
+std::vector<int> vectorsIntersection(const std::vector<int>& v1, const std::vector<int>& v2) {
+    // 1. Create a vector to store the intersection of v1 and v2.
+    std::vector<int> result;
+
+    // 2. Sort both input vectors.
+    std::vector<int> sortedV1 = v1;
+    std::vector<int> sortedV2 = v2;
+    std::sort(sortedV1.begin(), sortedV1.end());
+    std::sort(sortedV2.begin(), sortedV2.end());
+
+    set_intersection(sortedV1.begin(), sortedV1.end(), sortedV2.begin(), sortedV2.end(), back_inserter(result));
+
+    // 3. Use two iterators to traverse both sorted vectors.
+    // auto it1 = sortedV1.begin();
+    // auto it2 = sortedV2.begin();
+
+    // while (it1 != sortedV1.end() && it2 != sortedV2.end()) {
+    //     if (*it1 == *it2) {
+    //         // If elements are equal, add it to the result.
+    //         result.push_back(*it1);
+    //         ++it1;
+    //         ++it2;
+    //     } else if (*it1 < *it2) {
+    //         // Move the iterator for the first vector forward if the element is smaller.
+    //         ++it1;
+    //     } else {
+    //         // Move the iterator for the second vector forward if the element is smaller.
+    //         ++it2;
+    //     }
+    // }
+
+    // 4. Return the result vector containing the intersection.
+    return result;
 }
 
 
@@ -474,79 +514,78 @@ float OAMAE1tok(PointCloudPtr &raw_src, PointCloudPtr &raw_des, Eigen::Matrix4f 
         }
         score += num > 0 ? (dis / num) : 0;
     }
-    src_trans.reset(new pcl::PointCloud<pcl::PointXYZ>);
     return score;
 }
 
 
-Eigen::Matrix4f clusterInternalTransEva(pcl::IndicesClusters &clusterTrans, int best_index, Eigen::Matrix4f &initial,
-                                        std::vector<Eigen::Matrix3f> &Rs, std::vector<Eigen::Vector3f> &Ts,
-                                        PointCloudPtr &srcKpts, PointCloudPtr &des_kpts,
-                                        std::vector<std::pair<int, std::vector<int> > > &desSrc, float thresh,
-                                        Eigen::Matrix4f &gtMat, std::string folderpath) {
-    //std::string cluster_eva = folderpath + "/cluster_eva.txt";
-    //std::ofstream outfile(cluster_eva, ios::trunc);
-    //outfile.setf(ios::fixed, ios::floatfield);
-
-    float RE, TE;
-    bool suc = evaluationEst(initial, gtMat, 15, 30, RE, TE);
-
-
-    Eigen::Matrix3f R_initial = initial.topLeftCorner(3, 3);
-    Eigen::Vector3f T_initial = initial.block(0, 3, 3, 1);
-    float max_score = oamae(srcKpts, des_kpts, initial, desSrc, thresh);
-    std::cout << "Center est: " << suc << ", RE = " << RE << ", TE = " << TE << ", score = " << max_score << std::endl;
-    //outfile << setprecision(4) << RE << " " << TE << " " << max_score << " "<< suc <<  endl;
-    Eigen::Matrix4f est = initial;
-
-    //统计类内R T差异情况
-    std::vector<std::pair<float, float> > RTdifference;
-    float avg_Rdiff = 0, avg_Tdiff = 0;
-    int n = 0;
-    for (int i = 0; i < clusterTrans[best_index].indices.size(); i++) {
-        int ind = clusterTrans[best_index].indices[i];
-        Eigen::Matrix3f R = Rs[ind];
-        Eigen::Vector3f T = Ts[ind];
-        float R_diff = calculateRotationError(R, R_initial);
-        float T_diff = calculateTranslationError(T, T_initial);
-        if (isfinite(R_diff) && isfinite(T_diff)) {
-            avg_Rdiff += R_diff;
-            avg_Tdiff += T_diff;
-            n++;
-        }
-        RTdifference.emplace_back(R_diff, T_diff);
-    }
-    avg_Tdiff /= n;
-    avg_Rdiff /= n;
-
-    for (int i = 0; i < clusterTrans[best_index].indices.size(); i++) {
-        //继续缩小解空间
-        if (!isfinite(RTdifference[i].first) || !isfinite(RTdifference[i].second) || RTdifference[i].first > avg_Rdiff
-            || RTdifference[i].second > avg_Tdiff)
-            continue;
-        //if(RTdifference[i].first > 5 || RTdifference[i].second > 10) continue;
-        int ind = clusterTrans[best_index].indices[i];
-        Eigen::Matrix4f mat;
-        mat.setIdentity();
-        mat.block(0, 3, 3, 1) = Ts[ind];
-        mat.topLeftCorner(3, 3) = Rs[ind];
-        suc = evaluationEst(mat, gtMat, 15, 30, RE, TE);
-        float score = oamae(srcKpts, des_kpts, mat, desSrc, thresh);
-        //outfile << setprecision(4) << RE << " " << TE << " " << score << " "<< suc <<endl;
-        if (score > max_score) {
-            max_score = score;
-            est = mat;
-            std::cout << "Est in cluster: " << suc << ", RE = " << RE << ", TE = " << TE << ", score = " << score <<
-                    std::endl;
-        }
-    }
-    //outfile.close();
-    return est;
-}
+// Eigen::Matrix4f clusterInternalTransEva(pcl::IndicesClusters &clusterTrans, int best_index, Eigen::Matrix4f &initial,
+//                                         std::vector<Eigen::Matrix3f, Eigen::aligned_allocator<Eigen::Matrix3f>> &Rs, std::vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f>> &Ts,
+//                                         PointCloudPtr &srcKpts, PointCloudPtr &des_kpts,
+//                                         std::vector<std::pair<int, std::vector<int> > > &desSrc, float thresh,
+//                                         Eigen::Matrix4f &gtMat, std::string folderpath) {
+//     //std::string cluster_eva = folderpath + "/cluster_eva.txt";
+//     //std::ofstream outfile(cluster_eva, ios::trunc);
+//     //outfile.setf(ios::fixed, ios::floatfield);
+//
+//     float RE, TE;
+//     bool suc = evaluationEst(initial, gtMat, 15, 30, RE, TE);
+//
+//
+//     Eigen::Matrix3f R_initial = initial.topLeftCorner(3, 3);
+//     Eigen::Vector3f T_initial = initial.block(0, 3, 3, 1);
+//     float max_score = oamae(srcKpts, des_kpts, initial, desSrc, thresh);
+//     std::cout << "Center est: " << suc << ", RE = " << RE << ", TE = " << TE << ", score = " << max_score << std::endl;
+//     //outfile << setprecision(4) << RE << " " << TE << " " << max_score << " "<< suc <<  endl;
+//     Eigen::Matrix4f est = initial;
+//
+//     //统计类内R T差异情况
+//     std::vector<std::pair<float, float> > RTdifference;
+//     float avg_Rdiff = 0, avg_Tdiff = 0;
+//     int n = 0;
+//     for (int i = 0; i < clusterTrans[best_index].indices.size(); i++) {
+//         int ind = clusterTrans[best_index].indices[i];
+//         Eigen::Matrix3f R = Rs[ind];
+//         Eigen::Vector3f T = Ts[ind];
+//         float R_diff = calculateRotationError(R, R_initial);
+//         float T_diff = calculateTranslationError(T, T_initial);
+//         if (isfinite(R_diff) && isfinite(T_diff)) {
+//             avg_Rdiff += R_diff;
+//             avg_Tdiff += T_diff;
+//             n++;
+//         }
+//         RTdifference.emplace_back(R_diff, T_diff);
+//     }
+//     avg_Tdiff /= n;
+//     avg_Rdiff /= n;
+//
+//     for (int i = 0; i < clusterTrans[best_index].indices.size(); i++) {
+//         //继续缩小解空间
+//         if (!isfinite(RTdifference[i].first) || !isfinite(RTdifference[i].second) || RTdifference[i].first > avg_Rdiff
+//             || RTdifference[i].second > avg_Tdiff)
+//             continue;
+//         //if(RTdifference[i].first > 5 || RTdifference[i].second > 10) continue;
+//         int ind = clusterTrans[best_index].indices[i];
+//         Eigen::Matrix4f mat;
+//         mat.setIdentity();
+//         mat.block(0, 3, 3, 1) = Ts[ind];
+//         mat.topLeftCorner(3, 3) = Rs[ind];
+//         suc = evaluationEst(mat, gtMat, 15, 30, RE, TE);
+//         float score = oamae(srcKpts, des_kpts, mat, desSrc, thresh);
+//         //outfile << setprecision(4) << RE << " " << TE << " " << score << " "<< suc <<endl;
+//         if (score > max_score) {
+//             max_score = score;
+//             est = mat;
+//             std::cout << "Est in cluster: " << suc << ", RE = " << RE << ", TE = " << TE << ", score = " << score <<
+//                     std::endl;
+//         }
+//     }
+//     //outfile.close();
+//     return est;
+// }
 
 // 1tok version
 Eigen::Matrix4f clusterInternalTransEva1(const pcl::IndicesClusters &clusterTrans, int best_index, Eigen::Matrix4f &initial,
-                                         std::vector<Eigen::Matrix3f> &Rs, const std::vector<Eigen::Vector3f> &Ts,
+                                         std::vector<Eigen::Matrix3f, Eigen::aligned_allocator<Eigen::Matrix3f>> &Rs, const std::vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f>> &Ts,
                                          PointCloudPtr &src_kpts, PointCloudPtr &des_kpts,
                                          std::vector<std::pair<int, std::vector<int> > > &tgtSrc, const float thresh,
                                          Eigen::Matrix4f &GTmat, bool _1tok, std::string folderpath) {
@@ -572,11 +611,10 @@ Eigen::Matrix4f clusterInternalTransEva1(const pcl::IndicesClusters &clusterTran
 
     //统计类内R T差异情况
     std::vector<std::pair<float, float> > RTdifference;
-    int n = 0;
     for (int i = 0; i < clusterTrans[best_index].indices.size(); i++) {
-        int ind = clusterTrans[best_index].indices[i];
-        Eigen::Matrix3f R = Rs[ind];
-        Eigen::Vector3f T = Ts[ind];
+         int ind = clusterTrans[best_index].indices[i];
+         Eigen::Matrix3f R = Rs[ind];
+         Eigen::Vector3f T = Ts[ind];
         float R_diff = calculateRotationError(R, R_initial);
         float T_diff = calculateTranslationError(T, T_initial);
         RTdifference.emplace_back(R_diff, T_diff);

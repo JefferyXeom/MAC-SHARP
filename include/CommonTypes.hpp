@@ -36,29 +36,33 @@
 
 // 日志级别枚举
 enum class MacLogLevel {
-    MAC_SILENT = 0,   // 完全静默
-    MAC_ERROR = 1,    // 仅错误
+    MAC_SILENT = 0, // 完全静默
+    MAC_ERROR = 1, // 仅错误
     MAC_CRITICAL = 2, // 严重警告及以上
-    MAC_WARNING = 3,  // 警告及以上
-    MAC_INFO = 4,     // 信息及以上
-    MAC_DEBUG = 5     // 所有输出
+    MAC_WARNING = 3, // 警告及以上
+    MAC_INFO = 4, // 信息及以上
+    MAC_DEBUG = 5 // 所有输出
 };
 
 // 全局日志控制类
 class MacLogger {
     // private
     inline static MacLogLevel currentLevel;
+
 public:
     static void setLevel(const MacLogLevel level) {
         currentLevel = level;
     }
+
     static MacLogLevel getLevel() {
         return currentLevel;
     }
+
     static bool shouldLog(MacLogLevel level) {
         return static_cast<int>(level) <= static_cast<int>(currentLevel);
     }
 };
+
 // 日志宏定义
 #define LOG_ERROR(msg) \
 if (MacLogger::shouldLog(MacLogLevel::MAC_ERROR)) \
@@ -80,7 +84,6 @@ if (MacLogger::shouldLog(MacLogLevel::MAC_INFO)) \
 std::cout << BLUE << "[Timer] " << msg << RESET << std::endl
 
 
-
 ////============================================================
 ///
 /// Registration related
@@ -89,9 +92,10 @@ std::cout << BLUE << "[Timer] " << msg << RESET << std::endl
 ///
 // 定义一个枚举来表示方差的计算模式
 enum class VarianceMode {
-    FIXED,      // 传统方案：使用固定的alphaDis
-    DYNAMIC     // 动态方案：使用我们推导的sigma_ij^2
+    FIXED, // 传统方案：使用固定的alphaDis
+    DYNAMIC // 动态方案：使用我们推导的sigma_ij^2
 };
+
 // Use an enumeration type to clearly represent the formula to be used
 enum class ScoreFormula {
     GAUSSIAN_KERNEL,
@@ -147,6 +151,12 @@ enum class ScoreFormula {
  * 笛卡尔向量表示、局部基向量以及后续方差计算所需的三角函数值。
  */
 struct PrecomputedInfo {
+    // Overload new operator to ensure proper memory alignment for Eigen types in heaps
+    // This prevents potential segmentation faults due to misaligned memory access
+    // when using Eigen types in STL containers like std::vector.
+    // Reference: https://eigen.tuxfamily.org/dox/group__TopicStructHaving
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW // <-- 确保Eigen向量的内存对齐以避免索引错误
+
     // --- 预计算的球坐标 (对应我们公式中的 mu 值) ---
     /// @brief 径向距离 rho
     float rho;
@@ -174,7 +184,7 @@ struct PrecomputedInfo {
      * @brief 核心初始化函数，从一个PCL点对象完成所有预计算
      * @param point 输入的pcl::PointXYZ点
      */
-    void computeFrom(const pcl::PointXYZ& point) {
+    void computeFrom(const pcl::PointXYZ &point) {
         // 将PCL点转换为Eigen向量，便于后续的向量运算
         cartesianPos = Eigen::Vector3f(point.x, point.y, point.z);
 
@@ -208,6 +218,7 @@ struct PrecomputedInfo {
  * @brief Correspondence structure to store the correspondence between two point clouds
  */
 typedef struct CorresStruct {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW // <-- 确保Eigen向量的内存对齐以避免索引错误
     int srcIndex = -1; // Index in source keypoints cloud for current correspondence
     int tgtIndex = -1;
     pcl::PointXYZ src; // point in source keypoints cloud for current correspondence
@@ -227,8 +238,7 @@ typedef struct CorresStruct {
  * @brief Vertex structure for graph and degree calculation: graphVertex_
  *
  */
-typedef struct VertexStruct
-{
+typedef struct VertexStruct {
     int vertexIndex = -1;
     int degree = -1;
     float triWeight = 0.0f; // triangle weight must be in initialized to 0.0f
@@ -237,10 +247,13 @@ typedef struct VertexStruct
     std::vector<int> neighborIndices{};
     // --- 添加构造函数 ---
     // 提供一个默认构造函数，以防需要创建空对象
-    VertexStruct() {}
+    VertexStruct() {
+    }
+
     // 这正是 emplace_back 需要的构造函数！
     VertexStruct(const int idx, const float scr)
-        : vertexIndex(idx), vertexScore(scr) {}
+        : vertexIndex(idx), vertexScore(scr) {
+    }
 } VertexStruct;
 
 /**
@@ -252,10 +265,13 @@ typedef struct CliqueInfo {
     float cliqueScore = -1.0f;
     // --- 添加构造函数 ---
     // 提供一个默认构造函数，以防需要创建空对象
-    CliqueInfo() {}
+    CliqueInfo() {
+    }
+
     // 这正是 emplace_back 需要的构造函数！
     CliqueInfo(const int idx, const float scr)
-        : cliqueIndex(idx), cliqueScore(scr) {}
+        : cliqueIndex(idx), cliqueScore(scr) {
+    }
 } CliqueInfo;
 
 /**
@@ -271,43 +287,48 @@ typedef struct CliqueInfo {
  *  - `participatingCliques`: 存储了所有包含该顶点的最大团的索引和分数。
  *  - `flagGtCorrect`: (仅用于评估) 标记该顶点是否为真值内点（Ground Truth Inlier）。
  */
-typedef struct vertexCliqueSupport
-{
+typedef struct vertexCliqueSupport {
     int vertexIndex = -1; // clique index
     float score = 0.0f; // clique score must be initialized with 0.0f
-    std::vector<CliqueInfo>participatingCliques{};
+    std::vector<CliqueInfo> participatingCliques{};
     bool flagGtCorrect = false; // Only used in gt evaluation
     // --- 构造函数 ---
     // default constructor
-    vertexCliqueSupport() {}
+    vertexCliqueSupport() {
+    }
+
     // for emplace_back
     vertexCliqueSupport(const int idx, const float scr, const bool flg)
-        : vertexIndex(idx), score(scr), flagGtCorrect(flg) {}
+        : vertexIndex(idx), score(scr), flagGtCorrect(flg) {
+    }
 } vertexCliqueSupport;
 
 /**
  * @struct ClusterStruct
  * @brief Cluster structure
  */
-typedef struct ClusterStruct
-{
+typedef struct ClusterStruct {
     int clusterIndex;
     int clusterSize;
     bool flagGtCorrect; // Only used in gt evaluation
     // --- 添加构造函数 ---
     // 提供一个默认构造函数，以防需要创建空对象
-    ClusterStruct() : clusterIndex(0), clusterSize(0), flagGtCorrect(false) {}
+    ClusterStruct() : clusterIndex(0), clusterSize(0), flagGtCorrect(false) {
+    }
+
     // 这正是 emplace_back 需要的构造函数！
     ClusterStruct(const int idx, const int size, const bool flg)
-        : clusterIndex(idx), clusterSize(size), flagGtCorrect(flg) {}
+        : clusterIndex(idx), clusterSize(size), flagGtCorrect(flg) {
+    }
 } ClusterStruct;
 
 // 这里的每一个成员变量的_都去掉，并重命名
 // 用一个清晰的结构体来表示一个变换假设，取代原来零散的 std::vector
 struct TransformHypothesis {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW // <-- 确保Eigen向量的内存对齐以避免索引错误
     int originalIndex_ = -1; // 在初始假设列表中的索引
     Eigen::Matrix4f transform_ = Eigen::Matrix4f::Identity();
-    float localScore_ = 0.0f;  // 基于团内部点的分数
+    float localScore_ = 0.0f; // 基于团内部点的分数
     float globalScore_ = 0.0f; // 基于所有关键点的分数 (OAMAE)
     bool isGtCorrect_ = false; // (仅用于评估)
     std::vector<int> sourceCorrespondenceIndices_; // 这个假设来源于哪些对应关系的索引
@@ -315,4 +336,3 @@ struct TransformHypothesis {
 
 // 定义 PointCloudPtr 以便复用
 using PointCloudPtr = pcl::PointCloud<pcl::PointXYZ>::Ptr;
-

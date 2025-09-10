@@ -1,38 +1,49 @@
 //
 // Created by Jeffery_Xeom on 2025/8/24.
 //
-
-#include <cmath>       // sqrt, exp
-#include <fstream>     // save matrix / debug
+//// Std / FS
 #include <iostream>
-#include <vector>
-#include <algorithm>
-#include <numeric>
+#include <fstream>
+#include <filesystem>
+#include <string>
+#include <cstdlib>
+// #include <chrono>
 
-#include "CommonTypes.hpp"
+// PCL
+#include <pcl/common/transforms.h>
+#include <pcl/registration/icp.h>
+#include <pcl/point_types.h>
+#include <pcl/io/pcd_io.h>
+#include <pcl/io/ply_io.h>
+#include <pcl/visualization/pcl_visualizer.h>
+
+// BLAS / system
+#include <cblas.h>
+#include <process.h>
+
+// YAML
+#include <yaml-cpp/yaml.h>
+
+// Project headers
 #include "MacTimer.hpp"
-#include "MacUtils.hpp"  // Logs, Timer, ScoreFormula
+#include "MacConfig.hpp"
+#include "MacData.hpp"
 #include "MacGraph.hpp"
+// #include "MacSharp.hpp"
+// #include "MacRtHypothesis.hpp"
+#include "MacUtils.hpp"
+#include "MacMonitor.hpp"
+
+// ============================================================================
+// 1) Tee logger (console + file) without touching your LOG_* macros.
+//    We install a tee streambuf on std::cout and std::cerr so that *all*
+//    logs printed by your codebase automatically go to both terminal and file.
+//    When noLogFile=true, we skip the file sink entirely.
+// ============================================================================
 
 
 // ---- MacGraph build private static helpers ----
 
-
-/**
- * @brief A lightweight dynamic threshold heuristic
- * @details
- *  - For QUADRATIC_FALLOFF, we optionally drop very small weights.
- *  - Heuristic: threshold increases mildly with |dis| relative to alpha.
- *  - base is an additive floor; set to 0 by default to be conservative.
- */
-// TODO: Complete this critical function!!
-float MacGraph::dynamicThreshold(const float dis, const float alpha, const float base) {
-    // Normalize deviation by alpha (avoid div-by-zero)
-    const float a = (alpha > 1e-6f) ? (std::fabs(dis) / alpha) : std::fabs(dis);
-    // Map to [0, 0.2] approximately; you can tune these constants
-    const float t = std::min(0.2f, 0.05f + 0.05f * a);
-    return base + t;
-}
 
 /**
  * @brief 从两个点的预计算信息中，快速计算它们之间距离的方差。
@@ -40,16 +51,16 @@ float MacGraph::dynamicThreshold(const float dis, const float alpha, const float
  * 它不执行任何昂贵的计算（如三角函数），只进行快速的代数运算。
  * @param p1 第一个点的预计算信息
  * @param p2 第二个点的预计算信息
- * @param sigmaRho 传感器径向测量的标准差
- * @param sigmaTheta 传感器极角测量的标准差 (弧度)
- * @param sigmaPhi 传感器方位角测量的标准差 (弧度)
+ * @param varRho 传感器径向测量的方差
+ * @param varTheta 传感器极角测量的方差 (弧度)
+ * @param varPhi 传感器方位角测量的方差 (弧度)
  * @return 两点间距离的方差 (sigma_D^2)
  */
-float MacGraph::calculateVariance(const PrecomputedInfo& p1,
-                                  const PrecomputedInfo& p2,
-                                  const float sigmaRho,
-                                  const float sigmaTheta,
-                                  const float sigmaPhi) {
+float MacGraph::calculateVariance(const PrecomputedInfo &p1,
+                                  const PrecomputedInfo &p2,
+                                  const float varRho,
+                                  const float varTheta,
+                                  const float varPhi) {
     // 步骤 1: 计算均值距离方向向量 uHatD0
     // 直接使用预计算的笛卡尔坐标进行向量减法
     const Eigen::Vector3f d0Vec = p2.cartesianPos - p1.cartesianPos;
@@ -59,18 +70,13 @@ float MacGraph::calculateVariance(const PrecomputedInfo& p1,
     if (d0 < 1e-6f) {
         return 0.0f;
     }
-    const Eigen::Vector3f uHatD0 = d0Vec / d0;
-
-    // 步骤 2: 准备传感器噪声的方差
-    const float varRho = sigmaRho * sigmaRho;
-    const float varTheta = sigmaTheta * sigmaTheta;
-    const float varPhi = sigmaPhi * sigmaPhi;
+    const Eigen::Vector3f uHatD0 = d0Vec / d0; // d方向单位向量
 
     float totalVariance = 0.0f;
     const std::array<PrecomputedInfo, 2> points = {p1, p2};
 
     // 步骤 3: 循环 P1 和 P2, 累加各自的方差贡献
-    for (const auto& p : points) {
+    for (const auto &p: points) {
         // 步骤 3a: 计算点积 (投影系数)
         // 直接从预计算数据中获取基向量
         const float dotRho = uHatD0.dot(p.eHatRho);
@@ -242,6 +248,7 @@ void MacGraph::runCliqueFindingLoop() {
         } else {
             recalculateFlag = false;
         }
+        MON_SET_KV("graph/clique_iterations", iterNum); //////////////////////
         // 3. **必须**检查返回值
         if (error_code != IGRAPH_SUCCESS) {
             LOG_ERROR("Error finding maximal cliques: " << igraph_strerror(error_code));
@@ -322,6 +329,10 @@ void MacGraph::build() {
         return;
     }
 
+    // ---- [MON] weights/setup: record kernel parameters and modes ----
+    // Only track inner sub-steps; outer function is already monitored by caller.
+    MON_ENTER("graph/build/initialize");
+
     timerConstGraph.startTiming("construct graph: initialize");
     graphEigen_ = Eigen::MatrixXf::Zero(n, n);
 
@@ -332,7 +343,7 @@ void MacGraph::build() {
 
     if (config_.varianceMode == VarianceMode::DYNAMIC) {
         // 遍历一次所有的匹配点对，填充我们新增的预计算成员
-        for (CorresStruct& corres : data_.corres) {
+        for (CorresStruct &corres: data_.corres) {
             // 对源点和目标点分别进行预计算
             corres.srcPrecomputed.computeFrom(corres.src);
             corres.tgtPrecomputed.computeFrom(corres.tgt);
@@ -340,84 +351,194 @@ void MacGraph::build() {
     }
 
     timerConstGraph.endTiming();
+    // Record kernel scale and exponent used by the pairwise weighting.
+    MON_SET_KV("graph/alpha_dis", alphaDis);
+    MON_SET_KV("graph/gamma", gamma);
+
+    // If your config exposes formula / variance mode, record them as categorical strings.
+    // (Uncomment and adapt if the symbols are available here.)
+    // MON_SET_KV("graph/weight_formula", std::string(config_.scoreFormula == ScoreFormula::GAUSSIAN_KERNEL ? "GAUSSIAN_KERNEL" :
+    //                        (config_.scoreFormula == ScoreFormula::DYNAMIC_GAUSSIAN_KERNEL ? "DYNAMIC_GAUSSIAN_KERNEL" : "QUADRATIC_FALLOFF")));
+    // MON_SET_KV("graph/variance_mode", std::string(config_.varianceMode == VarianceMode::FIXED ? "FIXED" : "DYNAMIC"));
+    MON_RECORD(); // close weights_setup
 
     // Preload sensor noise parameters
-    const float sigmaRho = config_.sigmaRho;     // e.g., 0.01 (meters)
-    const float sigmaTheta = config_.sigmaTheta; // e.g., 0.001 (radians)
-    const float sigmaPhi = config_.sigmaPhi;     // e.g., 0.001 (radians)
-    const float nSigma = config_.nSigma;         // e.g., 1.0 or 2.0
+    // const float sigmaRho = config_.sigmaRho; // e.g., 0.01 (meters)
+    // const float sigmaTheta = config_.sigmaTheta; // e.g., 0.001 (radians)
+    // const float sigmaPhi = config_.sigmaPhi; // e.g., 0.001 (radians)
+    const float varRho = config_.sigmaRho * config_.sigmaRho;
+    const float varTheta = config_.sigmaTheta * config_.sigmaTheta;
+    const float varPhi = config_.sigmaPhi * config_.sigmaPhi;
+    const float nSigma = config_.nSigma; // e.g., 1.0 or 2.0
     // -------- First order graph --------
+    // ---- [MON] weights/pairwise: main O(N^2) weighting loop ----
+    MON_ENTER("graph/build/firstOrderGraph");
     timerConstGraph.startTiming("construct graph: first order graph");
+
+    // --- 步骤 1: 声明一个通用的“权重计算器”容器 ---
+    std::function<float(const CorresStruct &, const CorresStruct &)> calculateWeight;
+
+    // --- 步骤 2: 使用 switch 和 if/else 来选择并创建正确的“计算器” ---
+    // 这个选择过程只在循环外执行一次
     switch (config_.scoreFormula) {
         case ScoreFormula::GAUSSIAN_KERNEL: {
-            // Parallelize outer loop if OpenMP is available
-#pragma omp parallel for schedule(static) default(none) shared(n, gamma, sigmaRho,sigmaTheta, sigmaPhi, nSigma) reduction(+:localTotalEdges)
-            for (int i = 0; i < n; ++i) {
-                const CorresStruct &c1 = data_.corres[i];
-                for (int j = i + 1; j < n; ++j) {
-                    const CorresStruct &c2 = data_.corres[j];
+            if (config_.varianceMode == VarianceMode::DYNAMIC) {
+                LOG_INFO("Using graph weight formula: GAUSSIAN_KERNEL (Dynamic Variance)");
+                // 动态高斯核计算器
+                calculateWeight = [&](const CorresStruct &c1, const CorresStruct &c2) -> float {
                     const float srcDis = getDistance(c1.src, c2.src);
                     const float tgtDis = getDistance(c1.tgt, c2.tgt);
                     const float dDiff = srcDis - tgtDis;
-                    float w = 0; //
-                    if (config_.varianceMode == VarianceMode::DYNAMIC) {
-                        // ===============================================
-                        // ===========  方案 1: 动态方差 (新)  ===========
-                        // =======================
-                        // 调用轻量级成员函数计算组合方差
-                        const float sigmaDSqSrc = calculateVariance(c1.srcPrecomputed, c2.srcPrecomputed, sigmaRho, sigmaTheta, sigmaPhi);
-                        const float sigmaDSqTgt = calculateVariance(c1.tgtPrecomputed, c2.tgtPrecomputed, sigmaRho, sigmaTheta, sigmaPhi);
 
-                        if (const float sigmaIjSquared = sigmaDSqSrc + sigmaDSqTgt; dDiff < sigmaIjSquared) {
-                            w = std::exp(- (dDiff * dDiff) / (2.0f * sigmaIjSquared));
-                        }
-                    } else { // VarianceMode::FIXED
-                        // ==================================================
-                        // ===========  方案 2: 传统固定方差 (旧)  ===========
-                        // ==================================================
-                        // Hard cutoff at 0.8 (consistent with original implementation)
-                        // kitti is 0.9 in the original code.
+                    // 使用预计算的极坐标
+                    const float sigmaDSqSrc = calculateVariance(c1.srcPrecomputed, c2.srcPrecomputed, varRho,
+                                                                varTheta, varPhi);
+                    const float sigmaDSqTgt = calculateVariance(c1.tgtPrecomputed, c2.tgtPrecomputed, varRho,
+                                                                varTheta, varPhi);
 
-                        w = std::exp(dDiff * dDiff * gamma);
-                        // Hard cutoff at 0.8 (consistent with original implementation)
-                        if (w < 0.8f) w = 0.0f;
-
-                        // Hard cutoff at 0.8 (consistent with original implementation)
-                        // if (dDiff < 0.1) w = std::exp(dDiff * dDiff * gamma);
+                    if (const float sigmaIjSquared = sigmaDSqSrc + sigmaDSqTgt;
+                        sigmaIjSquared > 1e-8f && std::abs(dDiff) < nSigma * std::sqrt(sigmaIjSquared)) {
+                        // return std::exp(-(dDiff * dDiff) / (2.0f * sigmaIjSquared));
+                        return std::exp(dDiff * dDiff * gamma);
                     }
-                    graphEigen_(i, j) = w;
-                    graphEigen_(j, i) = w;
-                    if (w >= 0.8f) localTotalEdges++;
-                    // if (dDiff < 0.1) localTotalEdges++;
-                }
+                    return 0.0f;
+                };
+            } else {
+                // FIXED
+                LOG_INFO("Using graph weight formula: GAUSSIAN_KERNEL (Fixed Variance)");
+                calculateWeight = [&](const CorresStruct &c1, const CorresStruct &c2) -> float {
+                    const float srcDis = getDistance(c1.src, c2.src);
+                    const float tgtDis = getDistance(c1.tgt, c2.tgt);
+                    const float dDiff = srcDis - tgtDis;
+                    const float w = std::exp(dDiff * dDiff * gamma);
+                    return (w < 0.8f) ? 0.0f : w;
+                };
             }
             break;
         }
+        // Not implemented yet
         case ScoreFormula::QUADRATIC_FALLOFF: {
-#pragma omp parallel for schedule(static) default(none) shared(n, alphaDis) reduction(+:localTotalEdges)
-            for (int i = 0; i < n; ++i) {
-                for (int j = i + 1; j < n; ++j) {
-                    // Before the dynamic threshold function is ready, do NOT use this option!
-                    const CorresStruct &c1 = data_.corres[i];
-                    const CorresStruct &c2 = data_.corres[j];
-                    const float src_dis = getDistance(c1.src, c2.src);
-                    const float tgt_dis = getDistance(c1.tgt, c2.tgt);
-                    const float diff = src_dis - tgt_dis;
-                    float w = 1.0f - (diff * diff) / (alphaDis * alphaDis);
-                    // Drop tiny/negative weights using a mild dynamic threshold
-                    if (w < dynamicThreshold(diff, alphaDis, 0.0f)) w = 0.0f;
-                    graphEigen_(i, j) = w;
-                    graphEigen_(j, i) = w;
-                    if (w > 0.0f) localTotalEdges++;
-                }
-            }
+            LOG_INFO("Using graph weight formula: QUADRATIC_FALLOFF");
+            calculateWeight = [&](const CorresStruct &c1, const CorresStruct &c2) -> float {
+                const float srcDis = getDistance(c1.src, c2.src);
+                const float tgtDis = getDistance(c1.tgt, c2.tgt);
+                const float dDiff = srcDis - tgtDis;
+                float w = 1.0f - (dDiff * dDiff) / (alphaDis * alphaDis);
+                return (w > 0.8f) ? w : 0.0f; // 确保权重不为负
+            };
             break;
         }
-        default:
-            LOG_WARNING("Unknown score formula. Graph will remain zero.");
-            break;
+    }
+
+    // --- 步骤 3: 使用统一的、干净的主循环 ---
+#pragma omp parallel for schedule(static)
+    for (int i = 0; i < n; ++i) {
+        const CorresStruct &c1 = data_.corres[i];
+        for (int j = i + 1; j < n; ++j) {
+            const CorresStruct &c2 = data_.corres[j];
+
+            // 直接调用我们已经选好的“计算器”，循环内部不再有任何if/switch判断
+            const float w = calculateWeight(c1, c2);
+
+            graphEigen_(i, j) = w;
+            graphEigen_(j, i) = w;
+        }
+    }
+
+    //     switch (config_.scoreFormula) {
+    //         case ScoreFormula::GAUSSIAN_KERNEL: {
+    //             // Parallelize outer loop if OpenMP is available
+    // #pragma omp parallel for schedule(static) default(none) shared(config_, n, gamma, sigmaRho,sigmaTheta, sigmaPhi, nSigma) reduction(+:localTotalEdges)
+    //             for (int i = 0; i < n; ++i) {
+    //                 const CorresStruct &c1 = data_.corres[i];
+    //                 for (int j = i + 1; j < n; ++j) {
+    //                     const CorresStruct &c2 = data_.corres[j];
+    //                     const float srcDis = getDistance(c1.src, c2.src);
+    //                     const float tgtDis = getDistance(c1.tgt, c2.tgt);
+    //                     const float dDiff = srcDis - tgtDis;
+    //                     float w = 0; //
+    //                     if (config_.varianceMode == VarianceMode::DYNAMIC) {
+    //                         // ===============================================
+    //                         // ===========  方案 1: 动态方差 (新)  ===========
+    //                         // =======================
+    //                         // 调用轻量级成员函数计算组合方差
+    //                         const float sigmaDSqSrc = calculateVariance(c1.srcPrecomputed, c2.srcPrecomputed, sigmaRho, sigmaTheta, sigmaPhi);
+    //                         const float sigmaDSqTgt = calculateVariance(c1.tgtPrecomputed, c2.tgtPrecomputed, sigmaRho, sigmaTheta, sigmaPhi);
+    //
+    //                         if (const float sigmaIjSquared = sigmaDSqSrc + sigmaDSqTgt; dDiff < sigmaIjSquared) {
+    //                             w = std::exp(- (dDiff * dDiff) / (2.0f * sigmaIjSquared));
+    //                         }
+    //                     } else { // VarianceMode::FIXED
+    //                         // ==================================================
+    //                         // ===========  方案 2: 传统固定方差 (旧)  ===========
+    //                         // ==================================================
+    //                         // Hard cutoff at 0.8 (consistent with original implementation)
+    //                         // kitti is 0.9 in the original code.
+    //
+    //                         w = std::exp(dDiff * dDiff * gamma);
+    //                         // Hard cutoff at 0.8 (consistent with original implementation)
+    //                         if (w < 0.8f) w = 0.0f;
+    //
+    //                         // Hard cutoff at 0.8 (consistent with original implementation)
+    //                         // if (dDiff < 0.1) w = std::exp(dDiff * dDiff * gamma);
+    //                     }
+    //                     graphEigen_(i, j) = w;
+    //                     graphEigen_(j, i) = w;
+    //                     if (w >= 0.8f) localTotalEdges++;
+    //                     // if (dDiff < 0.1) localTotalEdges++;
+    //                 }
+    //             }
+    //             break;
+    //         }
+    //         case ScoreFormula::QUADRATIC_FALLOFF: {
+    // #pragma omp parallel for schedule(static) default(none) shared(n, alphaDis) reduction(+:localTotalEdges)
+    //             for (int i = 0; i < n; ++i) {
+    //                 for (int j = i + 1; j < n; ++j) {
+    //                     // Before the dynamic threshold function is ready, do NOT use this option!
+    //                     const CorresStruct &c1 = data_.corres[i];
+    //                     const CorresStruct &c2 = data_.corres[j];
+    //                     const float src_dis = getDistance(c1.src, c2.src);
+    //                     const float tgt_dis = getDistance(c1.tgt, c2.tgt);
+    //                     const float diff = src_dis - tgt_dis;
+    //                     float w = 1.0f - (diff * diff) / (alphaDis * alphaDis);
+    //                     // Drop tiny/negative weights using a mild dynamic threshold
+    //                     if (w < dynamicThreshold(diff, alphaDis, 0.0f)) w = 0.0f;
+    //                     graphEigen_(i, j) = w;
+    //                     graphEigen_(j, i) = w;
+    //                     if (w > 0.0f) localTotalEdges++;
+    //                 }
+    //             }
+    //             break;
+    //         }
+    //         default:
+    //             LOG_WARNING("Unknown score formula. Graph will remain zero.");
+    //             break;
+    //     }
+    if (config_.evaluationEnabled) {
+#pragma omp parallel for schedule(static) default(none) shared(graphEigen_) reduction(+:localTotalEdges)
+        for (int i = 0; i < graphEigen_.rows(); ++i) {
+            for (int j = i; j < graphEigen_.cols(); ++j) {
+                if (graphEigen_(i, j) != 0.0f) {
+                    // 使用一个通用的浮点数判断
+                    localTotalEdges++;
+                }
+            }
+        }
     }
     timerConstGraph.endTiming();
+    // Record non-zero edges and density after pairwise weighting (if you have these numbers).
+    // If you track non-zero count as 'nonZeroCount' (or 'localTotalEdges' post-threshold), use it here.
+    const long long __n = static_cast<long long>(data_.totalCorresNum);
+    const long long __maxUndirected = (__n > 1) ? (__n * (__n - 1LL) / 2LL) : 1LL;
+
+    // Try to use your real counter; fallback to a quick scan if needed.
+    // (Prefer not to scan here to avoid extra cost; keep it cheap.)
+    // MON_SET_KV("graph/edges_nonzero", static_cast<int>(nonZeroCount));
+    MON_SET_KV("graph/first_order_edges", localTotalEdges); // if localTotalEdges is already maintained
+    MON_SET_KV("graph/first_order_edge_density", static_cast<double>(localTotalEdges) / static_cast<double>(__maxUndirected));
+
+    MON_RECORD(); // close weights_pairwise
+
     // Symmetry check
     if (const Eigen::MatrixXf tmp = graphEigen_ - graphEigen_.transpose(); tmp.norm() != 0) {
         LOG_ERROR("First order graph is not symmetric! Please check parallel reduction or float precision.");
@@ -429,6 +550,7 @@ void MacGraph::build() {
     // save_matrix(graphEigen_, config_.outputPath + "/graph_matrix.txt");
     // Second order graphing is time-consuming, size 6000 will use up to 2s
     if (config_.flagSecondOrderGraph) {
+        MON_ENTER("graph/build/secondOrderGraph");
         timerConstGraph.startTiming("construct graph: second order graph");
         // A ∘ (A * A)
         graphEigen_ = graphEigen_.cwiseProduct(graphEigen_ * graphEigen_);
@@ -447,16 +569,25 @@ void MacGraph::build() {
 
         // Count non-zero edges (upper triangle)
         int nonZeroCount = 0;
-#pragma omp parallel for schedule(static) default(none) shared(nonZeroCount)
+#pragma omp parallel for schedule(static) default(none) shared(graphEigen_) reduction(+:nonZeroCount)
         for (int i = 0; i < graphEigen_.rows(); ++i) {
-            for (int j = i + 1; j < graphEigen_.cols(); ++j) {
+            for (int j = i; j < graphEigen_.cols(); ++j) {
                 if (graphEigen_(i, j) != 0.0f) {
                     nonZeroCount++;
                 }
             }
         }
+        // Try to use your real counter; fallback to a quick scan if needed.
+        // (Prefer not to scan here to avoid extra cost; keep it cheap.)
+        // MON_SET_KV("graph/edges_nonzero", static_cast<int>(nonZeroCount));
+        MON_SET_KV("graph/second_order_edges", nonZeroCount); // if localTotalEdges is already maintained
+        MON_SET_KV("graph/second_order_edge_density", static_cast<double>(nonZeroCount) / static_cast<double>(__maxUndirected));
+
+        MON_RECORD(); // close weights_pairwise
+
         LOG_INFO("Second order graph has been constructed, total edges: " << nonZeroCount);
     }
+
 
     // Check whether the graph is all 0.
     // If using dynamic threshold, it generally will not happen.
@@ -482,6 +613,8 @@ void MacGraph::computeGraphDegree() {
         return;
     }
     graphVertex_.resize(n);
+    // ---- [MON] degree/scan: scan adjacency rows to compute neighbor lists and degrees ----
+    MON_ENTER("graph/build/degree_scan");
 
 #pragma omp parallel for schedule(static) default(none) shared(graphVertex_, n)
     for (int i = 0; i < n; ++i) {
@@ -504,6 +637,15 @@ void MacGraph::computeGraphDegree() {
         graphVertex_[i].neighborIndices = std::move(neighborIndices);
         graphVertex_[i].neighborCorrectMatchNum = neighborCorrectMatchNum;
     }
+    // Optional: you can compute basic stats if cheap; otherwise record only the timing.
+    // Example (cheap if you already have degrees):
+    int maxDeg = 0; long long sumDeg = 0;
+    for (const auto& v : graphVertex_) { maxDeg = std::max(maxDeg, v.degree); sumDeg += v.degree; }
+    const double avgDeg = (graphVertex_.empty()? 0.0 : static_cast<double>(sumDeg)/graphVertex_.size());
+    MON_SET_KV("graph/max_degree", maxDeg);
+    MON_SET_KV("graph/avg_degree", avgDeg);
+    MON_RECORD(); // close degree_scan
+
 }
 
 // ---- Triangle weights ----
@@ -513,6 +655,8 @@ void MacGraph::computeGraphDegree() {
  * @note O(N^3); consider pruning or sparse representation for very large graphs.
  */
 void MacGraph::calculateTriangularWeights() {
+    // ---- [MON] triWeights/accumulate: parallel accumulation of triangle-based weights ----
+    MON_ENTER("graph/build/tri_weights_accumulate");
     Timer timerTriWeights;
     timerTriWeights.startTiming("calculate triangular weights");
     const int n = static_cast<int>(data_.corres.size());
@@ -523,7 +667,8 @@ void MacGraph::calculateTriangularWeights() {
     totalTriangleWeightSum_ = 0.0f;
     totalPossibleTriangleNum_ = 0;
 
-#pragma omp parallel for schedule(static) default(none) shared(n, graphVertex_, graphEigen_) reduction(+: totalTriangleWeightSum_, totalPossibleTriangleNum_)
+#pragma omp parallel for schedule(static) default(none) shared(n, graphVertex_, graphEigen_) reduction(+:\
+    totalTriangleWeightSum_, totalPossibleTriangleNum_)
     for (int i = 0; i < n; ++i) {
         // LOG_DEBUG("current i: " << i);
         if (const int neighborSize = graphVertex_[i].degree; neighborSize > 1) {
@@ -546,12 +691,25 @@ void MacGraph::calculateTriangularWeights() {
             graphVertex_[i].triWeight = acc / currentPossibleTriangleNum;
         }
     }
+    // Report global triangle stats computed in the loop.
+    MON_SET_KV("graph/tri_weight_sum", totalTriangleWeightSum_);
+    MON_SET_KV("graph/tri_possible_num", totalPossibleTriangleNum_);
+    const double __tri_avg = (totalPossibleTriangleNum_ > 0)
+            ? (static_cast<double>(totalTriangleWeightSum_) / static_cast<double>(totalPossibleTriangleNum_))
+            : 0.0;
+    MON_SET_KV("graph/tri_weight_avg", __tri_avg);
+    MON_RECORD(); // close tri_weights_accumulate
 
     // Write back to data_.corres for hypothesis and weighted SVD later
+    // ---- [MON] triWeights/writeback: write vertex-level weights back to correspondences ----
+    MON_ENTER("graph/build/tri_weights_writeback");
     for (int i = 0; i < n; ++i) {
         data_.corres[i].corresScore = graphVertex_[i].triWeight;
     }
     timerTriWeights.endTiming();
+    MON_SET_KV("graph/corres_scored", n); // number of correspondences with a triangle weight
+    MON_RECORD(); // close tri_weights_writeback
+
 }
 
 /**
@@ -561,6 +719,8 @@ void MacGraph::calculateTriangularWeights() {
  * @return The calculated graph threshold.
  */
 void MacGraph::calculateGraphThreshold() {
+    // ---- [MON] threshold/averages: compute vertex/triangle average weights ----
+    MON_ENTER("graph/build/threshold_averages");
     Timer timerGraphThreshold;
     timerGraphThreshold.startTiming("calculate graph threshold");
     graphThreshold_ = 0.0f;
@@ -577,8 +737,13 @@ void MacGraph::calculateGraphThreshold() {
     if (totalPossibleTriangleNum_ > 0) {
         averageTriangleWeight = totalTriangleWeightSum_ / static_cast<float>(totalPossibleTriangleNum_);
     }
+    MON_SET_KV("graph/avg_vertex_weight", averageVertexWeight);
+    MON_SET_KV("graph/avg_triangle_weight", averageTriangleWeight);
+    MON_RECORD(); // close threshold_averages
 
     // 3. 使用OTSU方法计算阈值
+    // ---- [MON] threshold/otsu: compute Otsu threshold over vertex weights ----
+    MON_ENTER("graph/build/threshold_otsu");
     float otsu = 0.0f;
     std::vector<float> triangularWeightScores;
     triangularWeightScores.reserve(data_.corres.size());
@@ -586,6 +751,8 @@ void MacGraph::calculateGraphThreshold() {
         triangularWeightScores.push_back(vertex.triWeight);
     }
     otsu = otsuThresh(triangularWeightScores);
+    MON_SET_KV("graph/otsu", otsu);
+    MON_RECORD(); // close threshold_otsu
 
     // 4. 取三者中的最小值作为最终阈值，这样图会更稀疏
     graphThreshold_ = std::min({otsu, averageVertexWeight, averageTriangleWeight});
@@ -593,6 +760,11 @@ void MacGraph::calculateGraphThreshold() {
     LOG_INFO("Graph threshold calculation: " << graphThreshold_ << " -> min(otsu: " << otsu
         << ", avg_vertex: " << averageVertexWeight << ", avg_triangle: " << averageTriangleWeight << ")");
     timerGraphThreshold.endTiming();
+    // ---- [MON] threshold/apply: final graph threshold ----
+    MON_ENTER("graph/build/threshold_apply");
+    MON_SET_KV("graph/threshold", graphThreshold_);
+    MON_RECORD(); // close threshold_apply
+
 }
 
 // ---- Maximal cliques ----
@@ -602,6 +774,8 @@ void MacGraph::calculateGraphThreshold() {
  */
 void MacGraph::findMaximalCliques() {
     LOG_INFO("Clique finding stage started.");
+    // ---- [MON] cliques/init_matrix ----
+    MON_ENTER("graph/build/cliques_init_matrix");
 
     Timer timerFindMaximalCliques;
     // --- 可靠性检查 1：确保图已构建 ---
@@ -614,12 +788,16 @@ void MacGraph::findMaximalCliques() {
     igraph_matrix_t igraphMatrix; // Create a local matrix for igraph
     initializeIgraphMatrixWithFilter(igraphMatrix);
     timerFindMaximalCliques.endTiming();
+    MON_RECORD(); // close cliques_init_matrix
 
     // --- 步骤 2: 从矩阵构建 igraph 对象 ---
+    // ---- [MON] cliques/build_igraph ----
+    MON_ENTER("graph/build/cliques_build_igraph");
     timerFindMaximalCliques.startTiming("find maximal cliques: build igraph");
     buildIgraphObjectFromMatrix(igraphMatrix);
     // igraphMatrix 在上一步函数结束后已被销毁，资源得到管理
     timerFindMaximalCliques.endTiming();
+    MON_RECORD(); // close cliques_build_igraph
 
     // --- 可靠性检查 2：确保 igraph 对象已成功创建 ---
     if (!igraphInitialized_) {
@@ -628,9 +806,14 @@ void MacGraph::findMaximalCliques() {
     }
 
     // --- 步骤 3: 运行核心的循环来查找团 ---
+    // ---- [MON] cliques/enumeration: repeated calls to igraph_maximal_cliques ----
+    MON_ENTER("graph/build/cliques_enumeration");
     timerFindMaximalCliques.startTiming("find maximal cliques: find maximal cliques");
     runCliqueFindingLoop();
     timerFindMaximalCliques.endTiming();
+
+    MON_SET_KV("graph/num_cliques", totalCliqueNum_);
+    MON_RECORD(); // close cliques_enumeration
 
     LOG_INFO("Number of total cliques: " << totalCliqueNum_);
     data_.totalCliqueNum = totalCliqueNum_;

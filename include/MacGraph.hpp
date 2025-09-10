@@ -39,9 +39,9 @@ class MacGraph {
 
 static float calculateVariance(const PrecomputedInfo& p1,
                                const PrecomputedInfo& p2,
-                               const float sigmaRho,
-                               const float sigmaTheta,
-                               const float sigmaPhi);
+                               const float varRho,
+                               const float varTheta,
+                               const float varPhi);
     static float otsuThresh(std::vector<float> scores);
 
     // --- findMaximalClique Core methods ---

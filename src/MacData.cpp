@@ -3,6 +3,7 @@
 //
 
 #include <fstream>
+#include <memory>
 #include <sstream>    // 新增：TXT 加载需要解析每行
 #include <algorithm>  // 新增：扩展名小写转换需要
 #include <cmath>      // 新增：sqrt 计算
@@ -12,8 +13,8 @@
 
 #include "CommonTypes.hpp"
 #include "MacTimer.hpp"
+#include "MacMonitor.hpp"
 #include "MacData.hpp"
-
 #include "MacUtils.hpp"
 
 
@@ -33,8 +34,8 @@ MacData::MacData()
       totalCorresNum(0),
       totalCliqueNum(0){
     gtTransform = Eigen::Matrix4f::Identity();
-    originalCorrSrc.reset(new pcl::PointCloud<pcl::PointXYZ>()); // 在构造时初始化智能指针
-    originalCorrTgt.reset(new pcl::PointCloud<pcl::PointXYZ>());
+    originalCorrSrc = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>(); // 在构造时初始化智能指针
+    originalCorrTgt = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
 }
 
 /**
@@ -149,7 +150,7 @@ bool MacData::loadPointCloud(const std::string &filePath, pcl::PointCloud<PointT
 // NOTE: the keypoints are not in the original point cloud, therefore nearest search is required.
 // Find the nearest point in the source and target key point clouds for each correspondence, and assign the indices to the correspondences.
 void MacData::findIndexForCorrespondences(PointCloudPtr &cloudSrcKpts, PointCloudPtr &cloudTgtKpts,
-                                                   std::vector<CorresStruct> &corres, std::ofstream& corresIndexFileOut) {
+                                                   std::vector<CorresStruct, Eigen::aligned_allocator<CorresStruct>> &corres, std::ofstream& corresIndexFileOut) {
     // 使用 KD-Tree 在关键点云中查找每个对应关系的最近索引
     pcl::KdTreeFLANN<pcl::PointXYZ> kdtreeSrcKpts, kdtreeTgtKpts;
     kdtreeSrcKpts.setInputCloud(cloudSrcKpts);
@@ -195,27 +196,39 @@ float MacData::meshResolutionCalculation(const PointCloudPtr &pointcloud) {
 // Our source target pair is a normal but non-invertible function (surjective, narrowly), which means a source can only have a single target,
 // but a target may have many sources. This function is used to find target source pair, where target paired with various sources.
 // Only happen if we use one way matching method
-void MacData::makeTgtSrcPair(const std::vector<CorresStruct> &correspondence,
+void MacData::makeTgtSrcPair(const std::vector<CorresStruct, Eigen::aligned_allocator<CorresStruct>> &correspondence,
                        std::vector<std::pair<int, std::vector<int> > > &tgtSrc) {
     //需要读取保存的kpts, 匹配数据按照索引形式保存
-    assert(correspondence.size() > 1); // 保留一个就行
     if (correspondence.size() < 2) {
-        std::cout << "The correspondence vector is empty." << std::endl;
+        LOG_ERROR("The correspondence vector is empty.");
+        tgtSrc.clear();
+        return;
     }
     tgtSrc.clear();
-    std::vector<CorresStruct> corr;
+
+    // Copy & sort by target index
+    std::vector<CorresStruct, Eigen::aligned_allocator<CorresStruct>> corr;
     corr.assign(correspondence.begin(), correspondence.end());
     std::sort(corr.begin(), corr.end(), compareCorresTgtIndex); // sort by target index increasing order
+
+    // Bucketize by tgtIndex: one target to multiple sources (surjective mapping)
     int tgt = corr[0].tgtIndex;
     std::vector<int> src;
+    src.reserve(10); // 预分配内存
     src.push_back(corr[0].srcIndex);
-    for (int i = 1; i < corr.size(); i++) {
+
+    for (size_t i = 1; i < corr.size(); ++i) {
         if (corr[i].tgtIndex != tgt) {
+            // flush previous bucket
             tgtSrc.emplace_back(tgt, src);
             src.clear();
             tgt = corr[i].tgtIndex;
         }
         src.push_back(corr[i].srcIndex);
+    }
+    // Flush the last bucket
+    if (!src.empty()) {
+        tgtSrc.emplace_back(tgt, src);
     }
     corr.clear();
     corr.shrink_to_fit();
@@ -252,10 +265,13 @@ bool MacData::loadData(const MacConfig &config) {
     originalCorrTgt->clear();
 
     // Local timer
+    MON_ENTER("loadData");
     Timer timerLoadData;
     LOG_INFO("Output path: " << config.outputPath);
 
     // --------------------- 读取点云与关键点 ---------------------
+    // Stage 1: load clouds (src/tgt & keypoints)
+    MON_ENTER("loadClouds");
     timerLoadData.startTiming("load data: load cloud points");
     // 定义一个辅助加载函数，用于检查、加载并打印错误信息
     auto loadAndCheck = [&](const std::string &path, auto &cloudPtr, const std::string &description) -> bool {
@@ -279,8 +295,16 @@ bool MacData::loadData(const MacConfig &config) {
     if (!loadAndCheck(config.cloudSrcKptPath, cloudSrcKpts, "source keypoints")) return false;
     if (!loadAndCheck(config.cloudTgtKptPath, cloudTgtKpts, "target keypoints")) return false;
     timerLoadData.endTiming();
+    // Record key counts as metrics for this stage
+    MON_SET_KV("N_src", static_cast<int>(cloudSrc->size()));
+    MON_SET_KV("N_tgt", static_cast<int>(cloudTgt->size()));
+    MON_SET_KV("N_src_kpt", static_cast<int>(cloudSrcKpts->size()));
+    MON_SET_KV("N_tgt_kpt", static_cast<int>(cloudTgtKpts->size()));
+    MON_RECORD(); // close "loadClouds"
 
     // --------------------- 读取对应关系与索引 ---------------------
+    // Stage 2: load correspondences (+ optional indices)
+    MON_ENTER("loadCorrespondences");
     timerLoadData.startTiming("load data: load and process correspondences");
     std::ifstream corresFile(config.corresPath);
     std::ifstream corresIndexFile(config.corresIndexPath);
@@ -319,28 +343,42 @@ bool MacData::loadData(const MacConfig &config) {
             i++;
         }
         if (i > totalCorresNum) {
-            LOG_WARNING("Too many correspondences in the index file: " << config.corresPath
+            LOG_WARNING("Too many correspondences in the index file: " << config.corresIndexPath
                 << ". This is probably a wrong index file. Ignoring the rest.");
         } else if (i < totalCorresNum) {
-            LOG_WARNING("Not enough correspondences in the index file: " << config.corresPath
+            LOG_WARNING("Not enough correspondences in the index file: " << config.corresIndexPath
                 << ". This is probably a wrong index file. Some correspondences will be missing indices.");
         }
     }
     timerLoadData.endTiming();
+    MON_SET_KV("corres_total", totalCorresNum);
+    MON_RECORD(); // close "loadCorrespondences"
 
-    // --------------------- 计算点云分辨率 ---------------------
-    if (config.meshResolution != 0.0f) {
-        cloudResolution = config.meshResolution;
+
+    // --------------------- Compute cloud resolution ---------------------
+    // Stage 3: compute or use mesh resolution
+    MON_ENTER("calcMeshResolution");
+    // Prefer dataset-level override; otherwise estimate from NN distances.
+    const DatasetConfig& ds = config.getCurrentDatasetConfig();
+    const bool userReso = (ds.meshResolution > 0.0f);
+    if (ds.meshResolution != 0.0f) {
+        cloudResolution = ds.meshResolution; // user-specified override from dataset config
         LOG_INFO("Using user-defined mesh resolution: " << cloudResolution);
     } else {
         timerLoadData.startTiming("load data: calculate mesh resolution");
+        // Estimate resolution as the mean NN distance averaged between src and tgt clouds
         cloudResolution = (meshResolutionCalculation(cloudSrc)
                            + meshResolutionCalculation(cloudTgt)) / 2.0f;
         LOG_INFO("Cloud resolution: " << cloudResolution);
         timerLoadData.endTiming();
     }
+    MON_SET_KV("mesh_reso", cloudResolution);
+    MON_SET_KV("mesh_reso_source", userReso ? std::string("user") : std::string("estimated"));
+    MON_RECORD(); // close "calcMeshResolution"
 
     // --------------------- 准备完整对应关系点云 ---------------------
+    // Stage 4: build full correspondence clouds
+    MON_ENTER("prepareCorrClouds");
     timerLoadData.startTiming("load data: prepare full correspondence point clouds");
     LOG_INFO("Preparing full correspondence point clouds...");
     originalCorrSrc->reserve(totalCorresNum); // 预分配内存提高效率
@@ -351,15 +389,25 @@ bool MacData::loadData(const MacConfig &config) {
     }
     LOG_INFO("Full correspondence point clouds prepared.");
     timerLoadData.endTiming();
+    MON_SET_KV("corr_clouds_size", totalCorresNum);
+    MON_RECORD(); // close "prepareCorrClouds"
 
     // 准备评估所需要的数据结构 (makeTgtSrcPair)
+    // Stage 5: build tgt->src buckets (surjective mapping)
+    MON_ENTER("buildTgtSrcMap");
     timerLoadData.startTiming("load data: prepare target-source pairs");
     LOG_INFO("Preparing target-source pairs...");
     makeTgtSrcPair(corres, tgtSrc);
     LOG_INFO("Total target points with multiple source points: " << tgtSrc.size());
     timerLoadData.endTiming();
+    MON_SET_KV("tgt_with_multi_src", static_cast<int>(tgtSrc.size()));
+    MON_RECORD(); // close "buildTgtSrcMap"
 
     // --------------------- 评估部分（可选） ---------------------
+    // Stage 6: load/process ground truth transform and labels
+    MON_ENTER("loadGroundTruth");
+    bool hasGtTf = false;
+    bool hasGtLabels = false;
     timerLoadData.startTiming("load data: load and process ground truth data");
     LOG_DEBUG("----------------Evaluation part----------------");
     // Ground Truth 变换矩阵（可选）
@@ -374,13 +422,12 @@ bool MacData::loadData(const MacConfig &config) {
         gtTfFile >> gtTransform(2, 0) >> gtTransform(2, 1) >> gtTransform(2, 2) >> gtTransform(2, 3);
         gtTfFile >> gtTransform(3, 0) >> gtTransform(3, 1) >> gtTransform(3, 2) >> gtTransform(3, 3);
         LOG_DEBUG("Ground truth transformation matrix: \n" << gtTransform);
+        hasGtTf = true;
     }
     // Ground Truth 内点标签（可选）
     if (std::ifstream gtLabelFile(config.gtLabelPath); !gtLabelFile.is_open()) {
-        if (config.flagVerbose) {
-            LOG_DEBUG("No Ground truth correspondence data: " << config.gtLabelPath
-                << ". System working without evaluation.");
-        }
+        LOG_DEBUG("No Ground truth correspondence data: " << config.gtLabelPath
+            << ". System working without evaluation.");
     } else {
         // 原 MAC++ 版本：逐值读取内/外点标记（1 表示内点）
         int value = 0;
@@ -399,9 +446,16 @@ bool MacData::loadData(const MacConfig &config) {
                                        : 0.0f;
         LOG_DEBUG("Inlier ratio: " << inlier_ratio * 100 << "%, GT inliers: " << gtInlierCount
             << ", total correspondences: " << totalCorresNum);
+        hasGtLabels = true;
     }
     LOG_DEBUG("-----------------------------------------------");
     timerLoadData.endTiming();
+    MON_SET_KV("has_gt_tf", hasGtTf);
+    MON_SET_KV("has_gt_labels", hasGtLabels);
+    MON_SET_KV("gt_inliers", gtInlierCount);
+    MON_RECORD(); // close "loadGroundTruth"
+
+    MON_RECORD(); // close "loadData"
 
     return true;
 }

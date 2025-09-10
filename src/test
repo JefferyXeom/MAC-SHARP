@@ -2,13 +2,13 @@
 #include <iostream>
 #include <filesystem>
 #include <string>
-// #include <cstdlib>
+#include <cstdlib>
 #include <chrono>
 
 // PCL
 #include <pcl/common/transforms.h>
 #include <pcl/registration/icp.h>
-// #include <pcl/point_types.h>
+#include <pcl/point_types.h>
 
 // Project headers
 #include "MacTimer.hpp"
@@ -38,56 +38,58 @@
  */
 bool registration(const MacConfig &macConfig, MacData &macData, MacResult &macResult,
                   MacMonitor& monitor) {
-    // Timer class is used for test
     Timer timer;
-    timer.clearHistory();
-    monitor.enter("registration");
+    timer.clearHistory();  // Clear any previous timing data
+
+    // Reset macResult to ensure we start fresh
     macResult.reset();
+
+    // Stage profiler tracks the hierarchical stages and logs their performance
+    StageProfiler profiler(monitor); // new profiler for hierarchical rows
 
     // -------- load data --------
     {
-        monitor.enter("loadData");
+        // Mark the beginning of the "loadData" stage
+        auto l1 = profiler.enter("loadData");
         LOG_INFO("================ Loading data... ================");
-        Timer t; t.startTiming("load data");
+        Timer t; t.startTiming("load data");  // Start timing for data loading
+
+        // Load the data from disk using macData's loadData function
         if (!macData.loadData(macConfig)) {
             LOG_ERROR("Failed to load all essential data. Exiting registration.");
-            t.endTiming();
-            monitor.record();
-            return false;
+            t.endTiming();  // End timing if loadData fails
+            profiler.recordHere(t.getLastElapsedTime());  // Record the time taken
+            return false;  // Exit if loading data fails
         }
-        t.endTiming();
-        monitor.record();
+        t.endTiming();  // End timing once the data is successfully loaded
+        profiler.recordHere(t.getTotalElapsedTime());  // Record the total time taken for the "loadData" stage
     }
 
     // U3M multipliers -> absolute thresholds (no-op for non-U3M)
+    // Set mesh resolution for U3M dataset (if applicable)
     const_cast<MacConfig&>(macConfig).setRuntimeMeshResolutionForCurrentDataset(macData.cloudResolution);
 
     // -------- construct graph --------
-    monitor.enter("constructGraph");
     LOG_INFO("================ Constructing graph... ================");
     timer.startTiming("construct graph");
-    MacGraph macGraph(macData, macConfig);
-    macGraph.build();
-    timer.endTiming();
-    // [Legacy] moved to MacMonitor
-    // monitor.recordStage("constructGraph", timer);
-    monitor.record(); // close constructGraph
+    MacGraph macGraph(macData, macConfig);  // Create graph object
+    macGraph.build();  // Build the graph
+    timer.endTiming();  // End timing for graph construction
+    monitor.recordStage("constructGraph", timer);  // Record the stage time for graph construction
 
     // -------- compute graph weights --------
-    monitor.enter("computeGraphWeights");
     LOG_INFO("================ Compute graph weights... ================");
     timer.startTiming("compute graph weights");
-    macGraph.computeGraphDegree();
-    macGraph.calculateTriangularWeights();
-    // macGraph.calculateGraphThreshold(); // optional
-    timer.endTiming();
-    // [Legacy] moved to MacMonitor
-    // monitor.recordStage("computeGraphWeights", timer);
-    monitor.record();
+    macGraph.computeGraphDegree();  // Compute degree of vertices
+    macGraph.calculateTriangularWeights();  // Calculate triangular weights for the graph
+    // macGraph.calculateGraphThreshold(); // optional threshold calculation (commented out)
+    timer.endTiming();  // End timing for graph weight computation
+    monitor.recordStage("computeGraphWeights", timer);  // Record the stage time for computing graph weights
 
+    // Store the ground truth inlier count from macData
     macResult.gtInlierNum = macData.gtInlierCount;
 
-    // Evaluation-only: GT inlier ratio
+    // Evaluation-only: Ground truth inlier ratio
     {
         const float gtInlierRatio = (macData.totalCorresNum > 0)
                                     ? static_cast<float>(macData.gtInlierCount) / static_cast<float>(macData.totalCorresNum)
@@ -98,54 +100,49 @@ bool registration(const MacConfig &macConfig, MacData &macData, MacResult &macRe
     }
 
     // -------- cliques --------
-    monitor.enter("findMaximalCliques");
     LOG_INFO("================ Finding maximal cliques... ================");
     timer.startTiming("find maximal cliques");
-    macGraph.findMaximalCliques();
-    timer.endTiming();
-    // [Legacy] moved to MacMonitor
-    // monitor.recordStage("findMaximalCliques", timer);
-    monitor.record();
+    macGraph.findMaximalCliques();  // Find the maximal cliques in the graph
+    timer.endTiming();  // End timing for maximal clique search
+    monitor.recordStage("findMaximalCliques", timer);  // Record the stage time for finding cliques
 
+    // If no cliques are found, return an error
     if (macData.totalCliqueNum == 0) {
         LOG_ERROR("No cliques found in the graph.");
         return false;
     }
 
     // -------- hypotheses --------
-    monitor.enter("generateRtHypotheses");
     LOG_INFO("================ Generate RT hypotheses... ================");
     timer.startTiming("generate RT hypotheses");
-    MacRtHypothesis macRtHypothesis(macData, macConfig, macGraph, macResult);
-    macRtHypothesis.processGraphResultAndFindBest(macGraph);
-    timer.endTiming();
-    // [Legacy] moved to MacMonitor
-    // monitor.recordStage("generateRtHypotheses", timer);
-    monitor.record();
+    MacRtHypothesis macRtHypothesis(macData, macConfig, macGraph, macResult);  // Create hypothesis generator
+    macRtHypothesis.processGraphResultAndFindBest(macGraph);  // Process the graph result and find the best RT hypothesis
+    timer.endTiming();  // End timing for RT hypothesis generation
+    monitor.recordStage("generateRtHypotheses", timer);  // Record the stage time for generating RT hypotheses
 
-    // Best transform
+    // Retrieve the best transform from the hypothesis generator
     Eigen::Matrix4f finalTransform = macRtHypothesis.getBestTransform();
 
     // -------- optional ICP refine --------
     if (macConfig.flagUseIcp) {
-        monitor.enter("icpRefine");
         LOG_INFO("================ ICP refinement (optional)... ================");
         pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
-        icp.setInputSource(macData.cloudSrc);
-        icp.setInputTarget(macData.cloudTgt);
-        icp.setMaximumIterations(50);
-        icp.setMaxCorrespondenceDistance(macConfig.threshold > 0.0f ? macConfig.threshold : 0.5f);
-        icp.setTransformationEpsilon(1e-8);
-        icp.setEuclideanFitnessEpsilon(1e-6);
+        icp.setInputSource(macData.cloudSrc);  // Set the source point cloud for ICP
+        icp.setInputTarget(macData.cloudTgt);  // Set the target point cloud for ICP
+        icp.setMaximumIterations(50);  // Set maximum iterations for ICP
+        icp.setMaxCorrespondenceDistance(macConfig.threshold > 0.0f ? macConfig.threshold : 0.5f);  // Max correspondence distance
+        icp.setTransformationEpsilon(1e-8);  // Transformation epsilon for convergence
+        icp.setEuclideanFitnessEpsilon(1e-6);  // Fitness epsilon for convergence
 
         pcl::PointCloud<pcl::PointXYZ> aligned;
         pcl::PointCloud<pcl::PointXYZ> srcInit = *macData.cloudSrc;
-        pcl::transformPointCloud(srcInit, aligned, finalTransform);
+        pcl::transformPointCloud(srcInit, aligned, finalTransform);  // Apply the initial transform
 
-        icp.setInputSource(aligned.makeShared());
+        icp.setInputSource(aligned.makeShared());  // Set the transformed source point cloud
         pcl::PointCloud<pcl::PointXYZ> refined;
-        icp.align(refined);
+        icp.align(refined);  // Perform ICP alignment
 
+        // If ICP converges, update the final transform
         if (icp.hasConverged()) {
             Eigen::Matrix4f icpDelta = icp.getFinalTransformation();
             finalTransform = icpDelta * finalTransform;
@@ -153,44 +150,29 @@ bool registration(const MacConfig &macConfig, MacData &macData, MacResult &macRe
         } else {
             LOG_WARNING("ICP did not converge. Keeping the pre-ICP best transform.");
         }
-        monitor.record();
     }
 
     // -------- final evaluation --------
-    monitor.enter("finalEvaluation");
-    bool pass = true;
-    if (macConfig.evaluationEnabled)
-        pass = MacEvaluator::validateFinalTransform(finalTransform, macData, macConfig, macResult);
+    const bool pass = MacEvaluator::validateFinalTransform(finalTransform, macData, macConfig, macResult);
 
-    // Total elapsed time for this registration call
-    macResult.timeEpoch = static_cast<float>(timer.getTotalElapsedTime());
-    monitor.record(); // close "final Evaluation"
+    // Store the total elapsed time for this registration call
+    macResult.timeEpoch = timer.getTotalElapsedTime();  // Get the total elapsed time for the registration process
 
-    monitor.record(); // close "registration"
     return pass;
 }
 
-// Windows UTF-8 + ANSI (VT) console init
-#if defined(_WIN32)
-#include <windows.h>
-static void EnableUtf8AndVTOnWindows() {
-    // 1) Switch code page to UTF-8 for input/output
-    SetConsoleOutputCP(CP_UTF8);
-    SetConsoleCP(CP_UTF8);
-
-    // 2) Enable Virtual Terminal Processing for ANSI colors/box-drawing
-    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (hOut != INVALID_HANDLE_VALUE) {
-        DWORD mode = 0;
-        if (GetConsoleMode(hOut, &mode)) {
-            SetConsoleMode(hOut, mode | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-        }
-    }
-}
-#endif
 // ----------------------------------------
 // main()
 // ----------------------------------------
+
+/**
+ * @brief The main entry point for the program.
+ * This function handles command-line arguments, loads the configuration file,
+ * initializes necessary directories, and then starts the registration process.
+ * @param argc Argument count
+ * @param argv Argument values
+ * @return 0 if registration was successful, -1 if there was an error
+ */
 int main(const int argc, char **argv) {
     if (argc == 1) {
         LOG_ERROR("Not enough arguments provided.");
@@ -201,15 +183,12 @@ int main(const int argc, char **argv) {
         LOG_WARNING("Too many arguments provided. Ignoring the rest.");
     }
 
-// #if defined(_WIN32)
-//     EnableUtf8AndVTOnWindows();
-// #endif
-
     // Whole-session timer (informative)
     Timer timerAll;
     timerAll.clearHistory();
     timerAll.startTiming("Whole session");
 
+    // Load the configuration file
     MacConfig macConfig;
     macConfig.load(argv[1]);
     LOG_INFO("MAC configuration loaded from: " << argv[1]);
@@ -238,31 +217,27 @@ int main(const int argc, char **argv) {
     MacMonitor monitor;
     monitor.setProgramStart(std::chrono::high_resolution_clock::now());
     monitor.init(macConfig); // respects noLogFile
-    MacMonitor::SetCurrent(&monitor); // for MON_ENTER etc.
-    monitor.enter("wholeSession");
 
-    // Threads
+    // Set the number of threads for the program
     settingThreads(macConfig.desiredThreads);
 
-    // Run registration
+    // Run the registration process
     MacData macData;
     MacResult macResult;
     const bool ok = registration(macConfig, macData, macResult, monitor);
 
-    // timerAll.endTiming();
-    // monitor.recordWholeSession(timerAll.getLastElapsedTime());
-    monitor.record();
-    monitor.dumpTimeTree();
+    // End the whole session timer and record it in the log
+    timerAll.endTiming();
+    monitor.recordWholeSession(timerAll);
 
-    if (macConfig.evaluationEnabled) {
-        if (ok) {
-            std::cout << GREEN << "Registration successful" << RESET << std::endl;
-        } else {
-            std::cout << YELLOW << "Registration failed" << RESET << std::endl;
-        }
+    // Output the result of the registration process
+    if (ok) {
+        std::cout << GREEN << "Registration successful" << RESET << std::endl;
+    } else {
+        std::cout << YELLOW << "Registration failed" << RESET << std::endl;
     }
 
-    // Clean sinks
+    // Clean up and shutdown the monitor
     monitor.shutdown();
     return ok ? 0 : -1;
 }
